@@ -1,0 +1,26 @@
+[package]
+name = "hopper"
+version = "0.2.0"
+authors = ["Brian L. Troutwine <blt@postmates.com>"]
+
+description = ""
+repository = "https://github.com/postmates/hopper"
+
+readme = "README.md"
+license = "MIT"
+
+keywords = [""]
+
+[profile.release]
+lto = true
+
+[dev-dependencies]
+quickcheck = "0.3"
+tempdir = "0.3"
+
+[dependencies]
+serde = "0.8"
+bincode = "0.6"
+
+[build-dependencies]
+serde_codegen = "0.8"
