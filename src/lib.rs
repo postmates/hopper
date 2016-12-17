@@ -52,6 +52,9 @@
 //! mpsc limits itself to one exclusive Sender or one exclusive Receiver at a
 //! time. This potentially limits the concurrency of mpsc but maintains data
 //! integrity.
+#![feature(plugin)]
+#![plugin(afl_plugin)]
+
 extern crate bincode;
 extern crate serde;
 
@@ -66,6 +69,7 @@ use std::fs;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::collections::VecDeque;
+use std::panic;
 
 /// PRIVATE -- exposed via `Sender::new`
 #[derive(Default, Debug)]
@@ -86,7 +90,7 @@ pub type FSLock<T> = Arc<Mutex<FsSync<T>>>;
 /// This function creates a Sender and Receiver pair with name `name` whose
 /// queue files are stored in `data_dir`. The Sender is clonable.
 pub fn channel<T>(name: &str, data_dir: &Path) -> (Sender<T>, Receiver<T>)
-    where T: Serialize + Deserialize
+    where T: Serialize + Deserialize + panic::UnwindSafe
 {
     channel_with_max_bytes(name, data_dir, 1_048_576 * 100)
 }
@@ -105,7 +109,7 @@ pub fn channel_with_max_bytes<T>(name: &str,
                                  data_dir: &Path,
                                  max_bytes: usize)
                                  -> (Sender<T>, Receiver<T>)
-    where T: Serialize + Deserialize
+    where T: Serialize + Deserialize + panic::UnwindSafe
 {
     let root = data_dir.join(name);
     let snd_root = root.clone();
