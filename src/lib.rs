@@ -18,13 +18,15 @@
 //! like a contiguous array:
 //!
 //! ```c
-//! [-------------------|~~~~~~~~~~~~~~~~~~. . .~~~~~~~~~~~~~~~~~~~~~~~~]
-//! 0    . . .          1024
+//! [---------------|----------------|~~~~~~~~~~~. . .~~~~~~~~~~~~~~~~]
+//! 0               1024             2048
 //! ```
-//!
-//! Between the indicies of 0 and 1024 hopper stores these items in-memory until
-//! they are retrieved. Above index 1024 items are paged out to disk. This fixes
-//! the memory burden of the system at the expense of disk IO.
+//! 
+//! Between the indicies of 0 and 1024 hopper stores items in-memory until they
+//! are retrieved. Above index 1024 items are paged out to disk. Items stored
+//! between index 1024 and 2048 are temporarily buffered in memory to allow a
+//! single page to disk once this buffer is full. This scheme fixes the memory
+//! burden of the system at the expense of disk IO.
 //!
 //! Hopper is intended to be used in situtations where your system cannot
 //! load-shed inputs and _must_ eventually process them. Hopper does page to
@@ -62,13 +64,16 @@
 //!
 //! ## Won't this fill up my disk?
 //!
-//! Nope! Each Sender has a notion of the maximum bytes it may read--which you
+//! Maybe! Each Sender has a notion of the maximum bytes it may read--which you
 //! can set explicitly when creating a channel with
 //! `channel_with_max_bytes`--and once the Sender has gone over that limit it'll
 //! attempt to mark the queue file as read-only and create a new file. The
 //! Receiver is programmed to read its current queue file until it reaches EOF
 //! and finds the file is read-only, at which point it deletes the file--it is
 //! the only reader--and moves on to the next.
+//!
+//! If the Receiver is unable to keep up with the Senders then, oops, your disk
+//! will gradually fill up.
 //!
 //! ## What kind of filesystem options will I need?
 //!
@@ -187,6 +192,70 @@ mod test {
 
         snd.send(1);
         assert_eq!(Some(1), rcv.next());
+    }
+
+    #[test]
+    fn all_mem_buffer_round_trip() {
+        let dir = tempdir::TempDir::new("hopper").unwrap();
+        let (mut snd, mut rcv) = channel("zero_item_round_trip", dir.path()).unwrap();
+
+        assert_eq!(None, rcv.next());
+
+        let cap = 1022;
+        for _ in 0..cap {
+            snd.send(1);
+        }
+        for _ in 0..cap {
+            assert_eq!(Some(1), rcv.next());
+        }
+    }
+
+    #[test]
+    fn full_mem_buffer_into_disk_round_trip() {
+        let dir = tempdir::TempDir::new("hopper").unwrap();
+        let (mut snd, mut rcv) = channel("zero_item_round_trip", dir.path()).unwrap();
+
+        assert_eq!(None, rcv.next());
+
+        let cap = 1024;
+        for _ in 0..cap {
+            snd.send(1);
+        }
+        for _ in 0..cap {
+            assert_eq!(Some(1), rcv.next());
+        }
+    }
+
+    #[test]
+    fn full_mem_buffer_full_disk_round_trip() {
+        let dir = tempdir::TempDir::new("hopper").unwrap();
+        let (mut snd, mut rcv) = channel("zero_item_round_trip", dir.path()).unwrap();
+
+        assert_eq!(None, rcv.next());
+
+        let cap = 2048;
+        for _ in 0..cap {
+            snd.send(1);
+        }
+        for _ in 0..cap {
+            assert_eq!(Some(1), rcv.next());
+        }
+    }
+
+    #[test]
+    fn full_mem_buffer_full_disk_multi_round_trip() {
+        let dir = tempdir::TempDir::new("hopper").unwrap();
+        let (mut snd, mut rcv) = channel("zero_item_round_trip", dir.path()).unwrap();
+
+        assert_eq!(None, rcv.next());
+
+        let cap = 4048;
+        for _ in 0..cap {
+            snd.send(1);
+        }
+        for _ in 0..cap {
+            assert_eq!(Some(1), rcv.next());
+        }
     }
 
     #[test]
