@@ -86,13 +86,21 @@ impl<T> Iterator for Receiver<T>
         // this is a signal from the senders that the file is no longer being
         // written to. It's safe for the Receiver to declare the log done by
         // deleting it and moving on to the next file.
-        while (*syn).writes_to_read > 0 {
-            if (*syn).writes_to_read <= (*syn).max_small_buffer {
-                let event = (*syn)
-                    .small_buffer
+        let fslock = &mut (*syn);
+        let writes_to_read = fslock.writes_to_read;
+
+        while writes_to_read > 0 {
+            if writes_to_read < fslock.max_buffer {
+                let event = fslock.mem_buffer
                     .pop_back()
                     .expect("there was not an event in the in-memory buffer!");
-                (*syn).writes_to_read -= 1;
+                fslock.writes_to_read -= 1;
+                return Some(event);
+            } else if (fslock.disk_writes_to_read == 0) && (writes_to_read >= fslock.max_buffer) {
+                let event = fslock.disk_buffer
+                    .pop_back()
+                    .expect("there was not an event in the disk buffer!");
+                fslock.writes_to_read -= 1;
                 return Some(event);
             } else {
                 match self.fp.read_exact(&mut sz_buf) {
@@ -103,7 +111,8 @@ impl<T> Iterator for Receiver<T>
                         Ok(()) => {
                             match deserialize(&payload_buf) {
                                 Ok(event) => {
-                                    (*syn).writes_to_read -= 1;
+                                    fslock.writes_to_read -= 1;
+                                    fslock.disk_writes_to_read -= 1;
                                     return Some(event);
                                 }
                                 Err(e) => panic!("Failed decoding. Skipping {:?}", e),
