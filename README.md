@@ -1,6 +1,6 @@
 # hopper - an unbounded mpsc with bounded memory
 
-[![Build Status](https://travis-ci.org/postmates/hopper.svg?branch=master)](https://travis-ci.org/postmates/hopper)
+[![Build Status](https://travis-ci.org/postmates/hopper.svg?branch=master)](https://travis-ci.org/postmates/hopper) [![Codecov](https://img.shields.io/codecov/c/github/postmates/hopper.svg)](https://codecov.io/gh/postmates/hopper) [![Crates.io](https://img.shields.io/crates/v/hopper.svg)](https://crates.io/crates/hopper)
 
 Hopper provides a version of the rust
 standard [mpsc](https://doc.rust-lang.org/std/sync/mpsc/) that is unbounded but
