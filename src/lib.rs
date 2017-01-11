@@ -21,7 +21,7 @@
 //! [---------------|----------------|~~~~~~~~~~~. . .~~~~~~~~~~~~~~~~]
 //! 0               1024             2048
 //! ```
-//! 
+//!
 //! Between the indicies of 0 and 1024 hopper stores items in-memory until they
 //! are retrieved. Above index 1024 items are paged out to disk. Items stored
 //! between index 1024 and 2048 are temporarily buffered in memory to allow a

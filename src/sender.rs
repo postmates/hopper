@@ -102,12 +102,12 @@ impl<T> Sender<T>
     pub fn send(&mut self, event: T) {
         let mut syn = self.fs_lock.lock().expect("Sender fs_lock poisoned");
         let fslock = &mut (*syn);
-        fslock.writes_to_read += 1;
-        if fslock.writes_to_read < fslock.max_buffer {
-            fslock.mem_buffer.push_front(event);
+
+        if fslock.sender_idx < fslock.in_memory_idx {
+            fslock.mem_buffer.push_back(event);
         } else {
-            fslock.disk_buffer.push_front(event);
-            if fslock.disk_buffer.len() >= fslock.max_buffer {
+            fslock.disk_buffer.push_back(event);
+            if fslock.disk_buffer.len() >= fslock.in_memory_idx {
                 while let Some(ev) = fslock.disk_buffer.pop_front() {
                     let mut pyld = Vec::with_capacity(64);
                     serialize_into(&mut pyld, &ev, SizeLimit::Infinite)
@@ -170,6 +170,16 @@ impl<T> Sender<T>
                 }
                 self.fp.flush().expect("unable to flush");
             }
+        }
+        fslock.writes_to_read += 1;
+        if fslock.sender_captured_recv_id == fslock.receiver_read_id &&
+           !fslock.write_bounds.is_empty() {
+            fslock.sender_idx += 1;
+            fslock.write_bounds[0].1 = fslock.sender_idx;
+        } else {
+            fslock.sender_captured_recv_id = fslock.receiver_read_id;
+            fslock.write_bounds.push_front((fslock.sender_idx, fslock.sender_idx));
+            fslock.sender_idx += 1;
         }
     }
 
