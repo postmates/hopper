@@ -21,7 +21,7 @@
 //! [---------------|----------------|~~~~~~~~~~~. . .~~~~~~~~~~~~~~~~]
 //! 0               1024             2048
 //! ```
-//! 
+//!
 //! Between the indicies of 0 and 1024 hopper stores items in-memory until they
 //! are retrieved. Above index 1024 items are paged out to disk. Items stored
 //! between index 1024 and 2048 are temporarily buffered in memory to allow a
@@ -98,6 +98,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
 use std::sync;
+use std::mem;
 
 /// Defines the errors that hopper will bubble up
 ///
@@ -158,6 +159,8 @@ pub fn channel_with_max_bytes<T>(name: &str,
         fs::create_dir_all(root).expect("could not create directory");
     }
     let cap: usize = 1024;
+    let sz = mem::size_of::<T>();
+    let max_bytes = if max_bytes < sz { sz } else { max_bytes };
     let fs_lock = sync::Arc::new(sync::Mutex::new(private::FsSync::new(cap)));
     let sender = try!(Sender::new(name, &snd_root, max_bytes, fs_lock.clone()));
     let receiver = try!(Receiver::new(&rcv_root, fs_lock));
