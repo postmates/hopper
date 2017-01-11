@@ -98,6 +98,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
 use std::sync;
+use std::mem;
 
 /// Defines the errors that hopper will bubble up
 ///
@@ -158,6 +159,8 @@ pub fn channel_with_max_bytes<T>(name: &str,
         fs::create_dir_all(root).expect("could not create directory");
     }
     let cap: usize = 1024;
+    let sz = mem::size_of::<T>();
+    let max_bytes = if max_bytes < sz { sz } else { max_bytes };
     let fs_lock = sync::Arc::new(sync::Mutex::new(private::FsSync::new(cap)));
     let sender = try!(Sender::new(name, &snd_root, max_bytes, fs_lock.clone()));
     let receiver = try!(Receiver::new(&rcv_root, fs_lock));
