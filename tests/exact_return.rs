@@ -22,17 +22,10 @@ mod integration {
             snd.send(i);
         }
 
-        let mut nxt = 0;
         let mut count = 0;
-        loop {
-            match rcv.next() {
-                Some(i) => {
-                    count += 1;
-                    assert_eq!(i, nxt);
-                    nxt += 1;
-                }
-                None => break,
-            }
+        for (nxt, i) in rcv.enumerate() {
+            count += 1;
+            assert_eq!(i, nxt);
         }
         assert_eq!(count, max);
     }
@@ -60,12 +53,8 @@ mod integration {
                 let dur = time::Duration::from_millis(1);
                 for _ in 0..250 {
                     thread::sleep(dur);
-                    loop {
-                        if let Some(_) = rcv.next() {
-                            count += 1;
-                        } else {
-                            break;
-                        }
+                    while rcv.next().is_some() {
+                        count += 1;
                     }
                 }
                 count
@@ -116,12 +105,9 @@ mod integration {
             let dur = time::Duration::from_millis(10);
             for _ in 0..250 {
                 thread::sleep(dur);
-                loop {
-                    if let Some(_) = rcv.next() {
-                        count += 1;
-                    } else {
-                        break;
-                    }
+
+                while rcv.next().is_some() {
+                    count += 1;
                 }
             }
             count
