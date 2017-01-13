@@ -51,7 +51,7 @@ mod integration {
                 for _ in 0..100 {
                     thread::sleep(dur);
                     loop {
-                        if let Some(i) = rcv.next() {
+                        if let Some(i) = rcv.iter().next() {
                             count += 1;
                             if max_thrs == 1 {
                                 assert_eq!(i, nxt);
