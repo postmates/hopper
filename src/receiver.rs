@@ -1,5 +1,5 @@
 use bincode::serde::deserialize;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::fs;
 use std::io::{BufReader, ErrorKind, Read, SeekFrom, Seek};
 use std::marker::PhantomData;
@@ -67,9 +67,8 @@ impl<T> Receiver<T>
     }
 }
 
-
 impl<T> Iterator for Receiver<T>
-    where T: Serialize + Deserialize
+    where T: Deserialize
 {
     type Item = T;
 
