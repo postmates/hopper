@@ -9,10 +9,10 @@ repository = "https://github.com/postmates/hopper"
 version = "0.1.2"
 
 [dev-dependencies]
-quickcheck = "0.3"
+quickcheck = "0.4"
 tempdir = "0.3"
 
 [dependencies]
-serde = "0.8"
-bincode = "0.6"
+serde = "0.9"
+bincode = "1.0.0-alpha1"
 
