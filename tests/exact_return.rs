@@ -23,7 +23,7 @@ mod integration {
         }
 
         let mut count = 0;
-        for (nxt, i) in rcv.enumerate() {
+        for (nxt, i) in rcv.iter().enumerate() {
             count += 1;
             assert_eq!(i, nxt);
         }
@@ -53,7 +53,7 @@ mod integration {
                 let dur = time::Duration::from_millis(1);
                 for _ in 0..250 {
                     thread::sleep(dur);
-                    while rcv.next().is_some() {
+                    for _ in rcv.iter() {
                         count += 1;
                     }
                 }
@@ -63,10 +63,8 @@ mod integration {
             // start all our sender threads and blast away
             for _ in 0..max_thrs {
                 let mut thr_snd = snd.clone();
-                joins.push(thread::spawn(move || {
-                    for i in 0..cap {
-                        thr_snd.send(i);
-                    }
+                joins.push(thread::spawn(move || for i in 0..cap {
+                    thr_snd.send(i);
                 }));
             }
 
@@ -105,7 +103,7 @@ mod integration {
             let dur = time::Duration::from_millis(10);
             for _ in 0..250 {
                 thread::sleep(dur);
-                while rcv.next().is_some() {
+                for _ in rcv.iter() {
                     count += 1;
                 }
             }
@@ -115,10 +113,8 @@ mod integration {
         // start all our sender threads and blast away
         for _ in 0..max_thrs {
             let mut thr_snd = snd.clone();
-            joins.push(thread::spawn(move || {
-                for i in 0..cap {
-                    thr_snd.send(i);
-                }
+            joins.push(thread::spawn(move || for i in 0..cap {
+                thr_snd.send(i);
             }));
         }
 
