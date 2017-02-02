@@ -24,7 +24,7 @@ let dir = tempdir::TempDir::new("hopper").unwrap();
 let (mut snd, mut rcv) = hopper::channel("example", dir.path()).unwrap();
 
 snd.send(9);
-assert_eq!(Some(9), rcv.next());
+assert_eq!(Some(9), rcv.iter().next());
 ```
 
 The primary difference here is that you must provide a name for the channel and

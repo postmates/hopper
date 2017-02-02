@@ -14,7 +14,7 @@ mod integration {
         let (mut snd, mut rcv) =
             channel_with_max_bytes("zero_item_round_trip", dir.path(), 1_048_576).unwrap();
 
-        assert_eq!(None, rcv.next());
+        assert_eq!(None, rcv.iter().next());
 
         let max = 10;
 
@@ -105,7 +105,6 @@ mod integration {
             let dur = time::Duration::from_millis(10);
             for _ in 0..250 {
                 thread::sleep(dur);
-
                 while rcv.next().is_some() {
                     count += 1;
                 }

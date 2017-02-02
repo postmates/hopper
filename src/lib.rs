@@ -129,7 +129,7 @@ pub enum Error {
 /// let (mut snd, mut rcv) = hopper::channel("example", dir.path()).unwrap();
 ///
 /// snd.send(9);
-/// assert_eq!(Some(9), rcv.next());
+/// assert_eq!(Some(9), rcv.iter().next());
 /// ```
 pub fn channel<T>(name: &str, data_dir: &Path) -> Result<(Sender<T>, Receiver<T>), Error>
     where T: Serialize + Deserialize
@@ -183,7 +183,7 @@ mod test {
 
         snd.send(1);
 
-        assert_eq!(Some(1), rcv.next());
+        assert_eq!(Some(1), rcv.iter().next());
     }
 
     #[test]
@@ -191,10 +191,10 @@ mod test {
         let dir = tempdir::TempDir::new("hopper").unwrap();
         let (mut snd, mut rcv) = channel("zero_item_round_trip", dir.path()).unwrap();
 
-        assert_eq!(None, rcv.next());
+        assert_eq!(None, rcv.iter().next());
 
         snd.send(1);
-        assert_eq!(Some(1), rcv.next());
+        assert_eq!(Some(1), rcv.iter().next());
     }
 
     #[test]
@@ -202,14 +202,14 @@ mod test {
         let dir = tempdir::TempDir::new("hopper").unwrap();
         let (mut snd, mut rcv) = channel("zero_item_round_trip", dir.path()).unwrap();
 
-        assert_eq!(None, rcv.next());
+        assert_eq!(None, rcv.iter().next());
 
         let cap = 1022;
         for _ in 0..cap {
             snd.send(1);
         }
         for _ in 0..cap {
-            assert_eq!(Some(1), rcv.next());
+            assert_eq!(Some(1), rcv.iter().next());
         }
     }
 
@@ -218,14 +218,14 @@ mod test {
         let dir = tempdir::TempDir::new("hopper").unwrap();
         let (mut snd, mut rcv) = channel("zero_item_round_trip", dir.path()).unwrap();
 
-        assert_eq!(None, rcv.next());
+        assert_eq!(None, rcv.iter().next());
 
         let cap = 1024;
         for _ in 0..cap {
             snd.send(1);
         }
         for _ in 0..cap {
-            assert_eq!(Some(1), rcv.next());
+            assert_eq!(Some(1), rcv.iter().next());
         }
     }
 
@@ -234,14 +234,14 @@ mod test {
         let dir = tempdir::TempDir::new("hopper").unwrap();
         let (mut snd, mut rcv) = channel("zero_item_round_trip", dir.path()).unwrap();
 
-        assert_eq!(None, rcv.next());
+        assert_eq!(None, rcv.iter().next());
 
         let cap = 2048;
         for _ in 0..cap {
             snd.send(1);
         }
         for _ in 0..cap {
-            assert_eq!(Some(1), rcv.next());
+            assert_eq!(Some(1), rcv.iter().next());
         }
     }
 
@@ -250,14 +250,14 @@ mod test {
         let dir = tempdir::TempDir::new("hopper").unwrap();
         let (mut snd, mut rcv) = channel("zero_item_round_trip", dir.path()).unwrap();
 
-        assert_eq!(None, rcv.next());
+        assert_eq!(None, rcv.iter().next());
 
         let cap = 4048;
         for _ in 0..cap {
             snd.send(1);
         }
         for _ in 0..cap {
-            assert_eq!(Some(1), rcv.next());
+            assert_eq!(Some(1), rcv.iter().next());
         }
     }
 
@@ -274,7 +274,7 @@ mod test {
             }
 
             for ev in evs {
-                assert_eq!(Some(ev), rcv.next());
+                assert_eq!(Some(ev), rcv.iter().next());
             }
             TestResult::passed()
         }
@@ -300,7 +300,7 @@ mod test {
             let mut total = evs.len();
             for ev in evs {
                 println!("REMAINING: {}", total);
-                assert_eq!(Some(ev), rcv.next());
+                assert_eq!(Some(ev), rcv.iter().next());
                 total -= 1;
             }
             TestResult::passed()
@@ -338,7 +338,7 @@ mod test {
             // value from the rcv, then marking it out of tst_pylds
             for _ in 0..(max_sz * max_thrs) {
                 loop {
-                    if let Some(nxt) = rcv.next() {
+                    if let Some(nxt) = rcv.iter().next() {
                         let idx = tst_pylds.binary_search(&nxt).expect("DID NOT FIND ELEMENT");
                         tst_pylds.remove(idx);
                         break;
@@ -385,7 +385,7 @@ mod test {
             joins.push(thread::spawn(move || {
                 for _ in 0..total_pylds {
                     loop {
-                        if let Some(_) = rcv.next() {
+                        if let Some(_) = rcv.iter().next() {
                             break;
                         }
                     }

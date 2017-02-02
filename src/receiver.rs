@@ -1,9 +1,10 @@
 use bincode::serde::deserialize;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::fs;
 use std::io::{BufReader, ErrorKind, Read, SeekFrom, Seek};
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
+use std::iter::IntoIterator;
 
 use private;
 
@@ -65,15 +66,8 @@ impl<T> Receiver<T>
             fs_lock: fs_lock,
         })
     }
-}
 
-
-impl<T> Iterator for Receiver<T>
-    where T: Serialize + Deserialize
-{
-    type Item = T;
-
-    fn next(&mut self) -> Option<T> {
+    fn next_value(&mut self) -> Option<T> {
         let mut sz_buf = [0; 4];
         let mut syn = self.fs_lock.lock().expect("Receiver fs_lock was poisoned!");
         // The receive loop
@@ -183,5 +177,55 @@ impl<T> Iterator for Receiver<T>
             }
         }
         None
+    }
+
+
+    /// An iterator over messages on a receiver, this iterator will block
+    /// whenever `next` is called, waiting for a new message, and `None` will be
+    /// returned when the corresponding channel has hung up.
+    pub fn iter<'a>(&'a mut self) -> Iter<'a, T> {
+        Iter { rx: self }
+    }
+}
+
+
+#[derive(Debug)]
+pub struct Iter<'a, T: 'a + Deserialize> {
+    rx: &'a mut Receiver<T>
+}
+
+impl<'a, T> Iterator for Iter<'a, T>
+    where T: Deserialize
+{
+    type Item = T;
+
+    fn next(&mut self) -> Option<T> {
+        self.rx.next_value()
+    }
+}
+
+#[derive(Debug)]
+pub struct IntoIter<T: Deserialize> {
+    rx: Receiver<T>
+}
+
+impl<T> Iterator for IntoIter<T>
+    where T: Deserialize
+{
+    type Item = T;
+
+    fn next(&mut self) -> Option<T> {
+        self.rx.next_value()
+    }
+}
+
+impl<T> IntoIterator for Receiver<T>
+    where T: Deserialize
+{
+    type Item = T;
+    type IntoIter = IntoIter<T>;
+
+    fn into_iter(self) -> IntoIter<T> {
+        IntoIter { rx: self }
     }
 }
