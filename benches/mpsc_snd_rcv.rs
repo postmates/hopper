@@ -23,7 +23,7 @@ fn bench_snd_rcv(b: &mut Bencher) {
     let (mut snd, mut rcv) = hopper::channel("bench_snd", dir.path()).unwrap();
     b.iter(|| {
         snd.send(12u64);
-        rcv.next().unwrap();
+        rcv.iter().next().unwrap();
     });
 }
 
@@ -36,7 +36,7 @@ fn bench_all_snd_all_rcv(b: &mut Bencher) {
             snd.send(89u64);
         }
         for _ in 0..10_000 {
-            rcv.next().unwrap();
+            rcv.iter().next().unwrap();
         }
     });
 }
