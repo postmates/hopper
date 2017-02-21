@@ -1,5 +1,5 @@
 use bincode::SizeLimit;
-use bincode::serde::serialize_into;
+use bincode::serialize_into;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::{Write, BufWriter};
