@@ -1,4 +1,4 @@
-use bincode::serde::deserialize;
+use bincode::deserialize;
 use serde::Deserialize;
 use std::fs;
 use std::io::{BufReader, ErrorKind, Read, SeekFrom, Seek};
@@ -191,7 +191,7 @@ impl<T> Receiver<T>
 
 #[derive(Debug)]
 pub struct Iter<'a, T: 'a + Deserialize> {
-    rx: &'a mut Receiver<T>
+    rx: &'a mut Receiver<T>,
 }
 
 impl<'a, T> Iterator for Iter<'a, T>
@@ -206,7 +206,7 @@ impl<'a, T> Iterator for Iter<'a, T>
 
 #[derive(Debug)]
 pub struct IntoIter<T: Deserialize> {
-    rx: Receiver<T>
+    rx: Receiver<T>,
 }
 
 impl<T> Iterator for IntoIter<T>
