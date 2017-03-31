@@ -382,12 +382,10 @@ mod test {
 
             // start our receiver thread
             let total_pylds = evs.len() * max_thrs;
-            joins.push(thread::spawn(move || {
-                for _ in 0..total_pylds {
-                    loop {
-                        if let Some(_) = rcv.iter().next() {
-                            break;
-                        }
+            joins.push(thread::spawn(move || for _ in 0..total_pylds {
+                loop {
+                    if let Some(_) = rcv.iter().next() {
+                        break;
                     }
                 }
             }));
@@ -396,10 +394,8 @@ mod test {
             for _ in 0..max_thrs {
                 let mut thr_snd = snd.clone();
                 let thr_evs = evs.clone();
-                joins.push(thread::spawn(move || {
-                    for e in thr_evs {
-                        thr_snd.send(e);
-                    }
+                joins.push(thread::spawn(move || for e in thr_evs {
+                    thr_snd.send(e);
                 }));
             }
 

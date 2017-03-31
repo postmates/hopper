@@ -12,7 +12,7 @@ allocating unbounded amounts of memory or dropping inputs on the floor.
 
 Include the hopper library in your Cargo.toml
 
-`hopper = "0.1"` 
+`hopper = "0.2"` 
 
 and use it in much the same way you'd use stdlib's mpsc:
 
@@ -64,7 +64,7 @@ The on-disk structure look like so:
     
 ```text
 data-dir/
-   sink-name0/
+sink-name0/
       0
       1
    sink-name1/

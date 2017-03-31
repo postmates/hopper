@@ -10,10 +10,8 @@ use self::test::Bencher;
 fn bench_snd(b: &mut Bencher) {
     let dir = tempdir::TempDir::new("hopper").unwrap();
     let (mut snd, _) = hopper::channel("bench_snd", dir.path()).unwrap();
-    b.iter(|| {
-        for _ in 0..10_000 {
-            snd.send(412u64);
-        }
+    b.iter(|| for _ in 0..10_000 {
+        snd.send(412u64);
     });
 }
 

@@ -68,10 +68,8 @@ mod integration {
             // start all our sender threads and blast away
             for _ in 0..max_thrs {
                 let mut thr_snd = snd.clone();
-                joins.push(thread::spawn(move || {
-                    for i in 0..cap {
-                        thr_snd.send(i);
-                    }
+                joins.push(thread::spawn(move || for i in 0..cap {
+                    thr_snd.send(i);
                 }));
             }
 

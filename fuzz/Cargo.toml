@@ -1,0 +1,25 @@
+
+[package]
+name = "hopper-fuzz"
+version = "0.0.1"
+authors = ["Automatically generated"]
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+tempdir = "0.3"
+
+[dependencies.hopper]
+path = ".."
+[dependencies.libfuzzer-sys]
+git = "https://github.com/rust-fuzz/libfuzzer-sys.git"
+
+# Prevent this from interfering with workspaces
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "basic_fuzz"
+path = "fuzzers/basic_fuzz.rs"
