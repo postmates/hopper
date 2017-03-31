@@ -1,13 +1,12 @@
-use bincode::SizeLimit;
+use bincode::Infinite;
 use bincode::serialize_into;
+use private;
 use serde::{Deserialize, Serialize};
+use std::fmt;
 use std::fs;
-use std::io::{Write, BufWriter};
+use std::io::{BufWriter, Write};
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
-use std::fmt;
-
-use private;
 
 #[inline]
 fn u32tou8abe(v: u32) -> [u8; 4] {
@@ -16,7 +15,8 @@ fn u32tou8abe(v: u32) -> [u8; 4] {
 
 #[derive(Debug)]
 /// The 'send' side of hopper, similar to
-/// [`std::sync::mpsc::Sender`](https://doc.rust-lang.org/std/sync/mpsc/struct.Sender.html).
+/// [`std::sync::mpsc::Sender`](https://doc.rust-lang.org/std/sync/mpsc/struct.
+/// Sender.html).
 pub struct Sender<T> {
     name: String,
     root: PathBuf, // directory we store our queues in
@@ -110,8 +110,7 @@ impl<T> Sender<T>
             if fslock.disk_buffer.len() >= fslock.in_memory_idx {
                 while let Some(ev) = fslock.disk_buffer.pop_front() {
                     let mut pyld = Vec::with_capacity(64);
-                    serialize_into(&mut pyld, &ev, SizeLimit::Infinite)
-                        .expect("could not serialize");
+                    serialize_into(&mut pyld, &ev, Infinite).expect("could not serialize");
                     // NOTE The conversion of t.len to u32 and usize is _only_
                     // safe when u32 <= usize. That's very likely to hold true
                     // for machines--for now?--that cernan will run on. However!
