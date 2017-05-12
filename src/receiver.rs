@@ -35,7 +35,14 @@ impl<T> Receiver<T>
         let seq_num = fs::read_dir(data_dir)
             .unwrap()
             .map(|de| {
-                de.unwrap().path().file_name().unwrap().to_str().unwrap().parse::<usize>().unwrap()
+                de.unwrap()
+                    .path()
+                    .file_name()
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+                    .parse::<usize>()
+                    .unwrap()
             })
             .max()
             .unwrap();
@@ -46,7 +53,12 @@ impl<T> Receiver<T>
         // place on disk.
         for fname in fs::read_dir(data_dir).unwrap() {
             let path = fname.unwrap().path();
-            let id = path.file_name().unwrap().to_str().unwrap().parse::<usize>().unwrap();
+            let id = path.file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .parse::<usize>()
+                .unwrap();
             let full_path = data_dir.join(path.file_name().unwrap().to_str().unwrap());
             if id != seq_num {
                 fs::remove_file(full_path).expect("could not remove index file");
@@ -57,19 +69,22 @@ impl<T> Receiver<T>
             .read(true)
             .open(log)
             .expect("RECEIVER could not open file");
-        fp.seek(SeekFrom::End(0)).expect("could not get to end of file");
+        fp.seek(SeekFrom::End(0))
+            .expect("could not get to end of file");
 
         Ok(Receiver {
-            root: data_dir.to_path_buf(),
-            fp: BufReader::new(fp),
-            resource_type: PhantomData,
-            fs_lock: fs_lock,
-        })
+               root: data_dir.to_path_buf(),
+               fp: BufReader::new(fp),
+               resource_type: PhantomData,
+               fs_lock: fs_lock,
+           })
     }
 
     fn next_value(&mut self) -> Option<T> {
         let mut sz_buf = [0; 4];
-        let mut syn = self.fs_lock.lock().expect("Receiver fs_lock was poisoned!");
+        let mut syn = self.fs_lock
+            .lock()
+            .expect("Receiver fs_lock was poisoned!");
         // The receive loop
         //
         // The receiver works by regularly attempting to read a payload from its
@@ -91,7 +106,8 @@ impl<T> Receiver<T>
                 fslock.receiver_max_idx = Some(bnds.1);
             }
             if fslock.receiver_idx.unwrap() < fslock.in_memory_idx {
-                let event = fslock.mem_buffer
+                let event = fslock
+                    .mem_buffer
                     .pop_front()
                     .expect("there was not an event in the in-memory");
                 fslock.writes_to_read -= 1;
@@ -99,7 +115,8 @@ impl<T> Receiver<T>
                 return Some(event);
             } else if (fslock.disk_writes_to_read == 0) &&
                       (fslock.receiver_idx.unwrap() >= fslock.in_memory_idx) {
-                let event = fslock.disk_buffer
+                let event = fslock
+                    .disk_buffer
                     .pop_front()
                     .expect("there was not an event in the disk buffer!");
                 fslock.writes_to_read -= 1;
@@ -136,10 +153,11 @@ impl<T> Receiver<T>
                                 // on us. We check the metadata condition of the
                                 // file and, if we find it read-only, switch on over
                                 // to a new log file.
-                                let metadata = self.fp
-                                    .get_ref()
-                                    .metadata()
-                                    .expect("could not get metadata at UnexpectedEof");
+                                let metadata =
+                                    self.fp
+                                        .get_ref()
+                                        .metadata()
+                                        .expect("could not get metadata at UnexpectedEof");
                                 if metadata.permissions().readonly() {
                                     // TODO all these unwraps are a silent death
                                     let seq_num = fs::read_dir(&self.root)

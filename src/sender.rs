@@ -36,7 +36,7 @@ impl<T> Clone for Sender<T>
                     &self.root,
                     self.max_bytes,
                     self.fs_lock.clone())
-            .unwrap()
+                .unwrap()
     }
 }
 
@@ -57,38 +57,38 @@ impl<T> Sender<T>
             return Err(super::Error::NoSuchDirectory);
         }
         let seq_num = match fs::read_dir(data_dir)
-            .unwrap()
-            .map(|de| {
-                de.unwrap()
-                    .path()
-                    .file_name()
-                    .unwrap()
-                    .to_str()
-                    .unwrap()
-                    .parse::<usize>()
-                    .unwrap()
-            })
-            .max() {
+                  .unwrap()
+                  .map(|de| {
+            de.unwrap()
+                .path()
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .parse::<usize>()
+                .unwrap()
+        })
+                  .max() {
             Some(sn) => sn,
             None => 0,
         };
         let log = data_dir.join(format!("{}", seq_num));
         match fs::OpenOptions::new()
-            .append(true)
-            .create(true)
-            .open(&log) {
+                  .append(true)
+                  .create(true)
+                  .open(&log) {
             Ok(fp) => {
                 (*syn).sender_seq_num = seq_num;
                 Ok(Sender {
-                    name: name.into(),
-                    root: data_dir.to_path_buf(),
-                    path: log,
-                    fp: BufWriter::new(fp),
-                    seq_num: seq_num,
-                    max_bytes: max_bytes,
-                    fs_lock: fs_lock,
-                    resource_type: PhantomData,
-                })
+                       name: name.into(),
+                       root: data_dir.to_path_buf(),
+                       path: log,
+                       fp: BufWriter::new(fp),
+                       seq_num: seq_num,
+                       max_bytes: max_bytes,
+                       fs_lock: fs_lock,
+                       resource_type: PhantomData,
+                   })
             }
             Err(e) => panic!("[Sender] failed to start {:?}", e),
         }
@@ -134,11 +134,14 @@ impl<T> Sender<T>
                         // read-only--there's some possibility that this will be
                         // done redundantly, but that's okay--and then read the
                         // current sender_seq_num to get up to date.
-                        let _ = fs::metadata(&self.path).map(|p| {
-                            let mut permissions = p.permissions();
-                            permissions.set_readonly(true);
-                            let _ = fs::set_permissions(&self.path, permissions);
-                        });
+                        let _ =
+                            fs::metadata(&self.path).map(|p| {
+                                                             let mut permissions = p.permissions();
+                                                             permissions.set_readonly(true);
+                                                             let _ =
+                                                                 fs::set_permissions(&self.path,
+                                                                                     permissions);
+                                                         });
                         if self.seq_num != fslock.sender_seq_num {
                             // This thread is behind the leader. We've got to
                             // set our current notion of seq_num forward and
@@ -154,7 +157,10 @@ impl<T> Sender<T>
                             fslock.bytes_written = 0;
                         }
                         self.path = self.root.join(format!("{}", self.seq_num));
-                        match fs::OpenOptions::new().append(true).create(true).open(&self.path) {
+                        match fs::OpenOptions::new()
+                                  .append(true)
+                                  .create(true)
+                                  .open(&self.path) {
                             Ok(fp) => self.fp = BufWriter::new(fp),
                             Err(e) => panic!("FAILED TO OPEN {:?} WITH {:?}", &self.path, e),
                         }
@@ -177,7 +183,9 @@ impl<T> Sender<T>
             fslock.write_bounds[0].1 = fslock.sender_idx;
         } else {
             fslock.sender_captured_recv_id = fslock.receiver_read_id;
-            fslock.write_bounds.push_front((fslock.sender_idx, fslock.sender_idx));
+            fslock
+                .write_bounds
+                .push_front((fslock.sender_idx, fslock.sender_idx));
             fslock.sender_idx += 1;
         }
     }
