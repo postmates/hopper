@@ -202,7 +202,7 @@ impl<T> Receiver<T>
     /// An iterator over messages on a receiver, this iterator will block
     /// whenever `next` is called, waiting for a new message, and `None` will be
     /// returned when the corresponding channel has hung up.
-    pub fn iter<'a>(&'a mut self) -> Iter<'a, T> {
+    pub fn iter(&mut self) -> Iter<T> {
         Iter { rx: self }
     }
 }

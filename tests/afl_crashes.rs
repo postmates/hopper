@@ -51,15 +51,11 @@ mod integration {
                 let dur = time::Duration::from_millis(1);
                 for _ in 0..100 {
                     thread::sleep(dur);
-                    loop {
-                        if let Some(i) = rcv.iter().next() {
-                            count += 1;
-                            if max_thrs == 1 {
-                                assert_eq!(i, nxt);
-                                nxt += 1;
-                            }
-                        } else {
-                            break;
+                    for i in rcv.iter() {
+                        count += 1;
+                        if max_thrs == 1 {
+                            assert_eq!(i, nxt);
+                            nxt += 1;
                         }
                     }
                 }
