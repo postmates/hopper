@@ -19,7 +19,8 @@ mod integration {
 
         let mut f = File::open(resource).expect("could not open resource file");
         let mut buffer = String::new();
-        f.read_to_string(&mut buffer).expect("could not read resource file");
+        f.read_to_string(&mut buffer)
+            .expect("could not read resource file");
 
         for s in buffer.lines() {
             println!("{}", s);
@@ -38,7 +39,7 @@ mod integration {
             let (snd, mut rcv) = channel_with_max_bytes("concurrent_snd_and_rcv_small_max_bytes",
                                                         dir.path(),
                                                         max_bytes)
-                .unwrap();
+                    .unwrap();
 
             let mut joins = Vec::new();
 
@@ -50,15 +51,11 @@ mod integration {
                 let dur = time::Duration::from_millis(1);
                 for _ in 0..100 {
                     thread::sleep(dur);
-                    loop {
-                        if let Some(i) = rcv.iter().next() {
-                            count += 1;
-                            if max_thrs == 1 {
-                                assert_eq!(i, nxt);
-                                nxt += 1;
-                            }
-                        } else {
-                            break;
+                    for i in rcv.iter() {
+                        count += 1;
+                        if max_thrs == 1 {
+                            assert_eq!(i, nxt);
+                            nxt += 1;
                         }
                     }
                 }
@@ -69,8 +66,8 @@ mod integration {
             for _ in 0..max_thrs {
                 let mut thr_snd = snd.clone();
                 joins.push(thread::spawn(move || for i in 0..cap {
-                    thr_snd.send(i);
-                }));
+                                             thr_snd.send(i);
+                                         }));
             }
 
             // wait until the senders are for sure done

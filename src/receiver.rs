@@ -1,12 +1,12 @@
 use bincode::deserialize;
-use serde::Deserialize;
-use std::fs;
-use std::io::{BufReader, ErrorKind, Read, SeekFrom, Seek};
-use std::marker::PhantomData;
-use std::path::{Path, PathBuf};
-use std::iter::IntoIterator;
 
 use private;
+use serde::de::DeserializeOwned;
+use std::fs;
+use std::io::{BufReader, ErrorKind, Read, Seek, SeekFrom};
+use std::iter::IntoIterator;
+use std::marker::PhantomData;
+use std::path::{Path, PathBuf};
 
 #[inline]
 fn u8tou32abe(v: &[u8]) -> u32 {
@@ -15,7 +15,8 @@ fn u8tou32abe(v: &[u8]) -> u32 {
 
 #[derive(Debug)]
 /// The 'receive' side of hopper, similar to
-/// [`std::sync::mpsc::Receiver`](https://doc.rust-lang.org/std/sync/mpsc/struct.Receiver.html).
+/// [`std::sync::mpsc::Receiver`](https://doc.rust-lang.
+/// org/std/sync/mpsc/struct.Receiver.html).
 pub struct Receiver<T> {
     root: PathBuf, // directory we store our queues in
     fp: BufReader<fs::File>, // active fp
@@ -24,7 +25,7 @@ pub struct Receiver<T> {
 }
 
 impl<T> Receiver<T>
-    where T: Deserialize
+    where T: DeserializeOwned
 {
     #[doc(hidden)]
     pub fn new(data_dir: &Path, fs_lock: private::FSLock<T>) -> Result<Receiver<T>, super::Error> {
@@ -35,7 +36,14 @@ impl<T> Receiver<T>
         let seq_num = fs::read_dir(data_dir)
             .unwrap()
             .map(|de| {
-                de.unwrap().path().file_name().unwrap().to_str().unwrap().parse::<usize>().unwrap()
+                de.unwrap()
+                    .path()
+                    .file_name()
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+                    .parse::<usize>()
+                    .unwrap()
             })
             .max()
             .unwrap();
@@ -46,7 +54,12 @@ impl<T> Receiver<T>
         // place on disk.
         for fname in fs::read_dir(data_dir).unwrap() {
             let path = fname.unwrap().path();
-            let id = path.file_name().unwrap().to_str().unwrap().parse::<usize>().unwrap();
+            let id = path.file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .parse::<usize>()
+                .unwrap();
             let full_path = data_dir.join(path.file_name().unwrap().to_str().unwrap());
             if id != seq_num {
                 fs::remove_file(full_path).expect("could not remove index file");
@@ -57,19 +70,22 @@ impl<T> Receiver<T>
             .read(true)
             .open(log)
             .expect("RECEIVER could not open file");
-        fp.seek(SeekFrom::End(0)).expect("could not get to end of file");
+        fp.seek(SeekFrom::End(0))
+            .expect("could not get to end of file");
 
         Ok(Receiver {
-            root: data_dir.to_path_buf(),
-            fp: BufReader::new(fp),
-            resource_type: PhantomData,
-            fs_lock: fs_lock,
-        })
+               root: data_dir.to_path_buf(),
+               fp: BufReader::new(fp),
+               resource_type: PhantomData,
+               fs_lock: fs_lock,
+           })
     }
 
     fn next_value(&mut self) -> Option<T> {
         let mut sz_buf = [0; 4];
-        let mut syn = self.fs_lock.lock().expect("Receiver fs_lock was poisoned!");
+        let mut syn = self.fs_lock
+            .lock()
+            .expect("Receiver fs_lock was poisoned!");
         // The receive loop
         //
         // The receiver works by regularly attempting to read a payload from its
@@ -91,7 +107,8 @@ impl<T> Receiver<T>
                 fslock.receiver_max_idx = Some(bnds.1);
             }
             if fslock.receiver_idx.unwrap() < fslock.in_memory_idx {
-                let event = fslock.mem_buffer
+                let event = fslock
+                    .mem_buffer
                     .pop_front()
                     .expect("there was not an event in the in-memory");
                 fslock.writes_to_read -= 1;
@@ -99,7 +116,8 @@ impl<T> Receiver<T>
                 return Some(event);
             } else if (fslock.disk_writes_to_read == 0) &&
                       (fslock.receiver_idx.unwrap() >= fslock.in_memory_idx) {
-                let event = fslock.disk_buffer
+                let event = fslock
+                    .disk_buffer
                     .pop_front()
                     .expect("there was not an event in the disk buffer!");
                 fslock.writes_to_read -= 1;
@@ -108,26 +126,26 @@ impl<T> Receiver<T>
             } else {
                 match self.fp.read_exact(&mut sz_buf) {
                     Ok(()) => {
-                    let payload_size_in_bytes = u8tou32abe(&sz_buf);
-                    let mut payload_buf = vec![0; (payload_size_in_bytes as usize)];
-                    match self.fp.read_exact(&mut payload_buf) {
-                        Ok(()) => {
-                            match deserialize(&payload_buf) {
-                                Ok(event) => {
-                                    fslock.receiver_idx = fslock.receiver_idx.map(|x| x + 1);
-                                    fslock.writes_to_read -= 1;
-                                    fslock.disk_writes_to_read -= 1;
-                                    return Some(event);
+                        let payload_size_in_bytes = u8tou32abe(&sz_buf);
+                        let mut payload_buf = vec![0; (payload_size_in_bytes as usize)];
+                        match self.fp.read_exact(&mut payload_buf) {
+                            Ok(()) => {
+                                match deserialize(&payload_buf) {
+                                    Ok(event) => {
+                                        fslock.receiver_idx = fslock.receiver_idx.map(|x| x + 1);
+                                        fslock.writes_to_read -= 1;
+                                        fslock.disk_writes_to_read -= 1;
+                                        return Some(event);
+                                    }
+                                    Err(e) => panic!("Failed decoding. Skipping {:?}", e),
                                 }
-                                Err(e) => panic!("Failed decoding. Skipping {:?}", e),
+                            }
+                            Err(e) => {
+                                panic!("Error, on-disk payload of advertised size not available! \
+                                        Recv failed with error {:?}",
+                                       e);
                             }
                         }
-                        Err(e) => {
-                            panic!("Error, on-disk payload of advertised size not available! \
-                                    Recv failed with error {:?}",
-                                   e);
-                        }
-                    }
                     }
                     Err(e) => {
                         match e.kind() {
@@ -136,10 +154,11 @@ impl<T> Receiver<T>
                                 // on us. We check the metadata condition of the
                                 // file and, if we find it read-only, switch on over
                                 // to a new log file.
-                                let metadata = self.fp
-                                    .get_ref()
-                                    .metadata()
-                                    .expect("could not get metadata at UnexpectedEof");
+                                let metadata =
+                                    self.fp
+                                        .get_ref()
+                                        .metadata()
+                                        .expect("could not get metadata at UnexpectedEof");
                                 if metadata.permissions().readonly() {
                                     // TODO all these unwraps are a silent death
                                     let seq_num = fs::read_dir(&self.root)
@@ -183,49 +202,48 @@ impl<T> Receiver<T>
     /// An iterator over messages on a receiver, this iterator will block
     /// whenever `next` is called, waiting for a new message, and `None` will be
     /// returned when the corresponding channel has hung up.
-    pub fn iter<'a>(&'a mut self) -> Iter<'a, T> {
+    pub fn iter(&mut self) -> Iter<T> {
         Iter { rx: self }
     }
 }
 
-
 #[derive(Debug)]
-pub struct Iter<'a, T: 'a + Deserialize> {
+pub struct Iter<'a, T: 'a + DeserializeOwned> {
     rx: &'a mut Receiver<T>,
 }
 
-impl<'a, T> Iterator for Iter<'a, T>
-    where T: Deserialize
-{
-    type Item = T;
-
-    fn next(&mut self) -> Option<T> {
-        self.rx.next_value()
-    }
-}
-
 #[derive(Debug)]
-pub struct IntoIter<T: Deserialize> {
+pub struct IntoIter<T: DeserializeOwned> {
     rx: Receiver<T>,
 }
 
-impl<T> Iterator for IntoIter<T>
-    where T: Deserialize
-{
-    type Item = T;
-
-    fn next(&mut self) -> Option<T> {
-        self.rx.next_value()
-    }
-}
-
 impl<T> IntoIterator for Receiver<T>
-    where T: Deserialize
+    where T: DeserializeOwned
 {
     type Item = T;
     type IntoIter = IntoIter<T>;
 
     fn into_iter(self) -> IntoIter<T> {
         IntoIter { rx: self }
+    }
+}
+
+impl<'a, T> Iterator for Iter<'a, T>
+    where T: DeserializeOwned
+{
+    type Item = T;
+
+    fn next(&mut self) -> Option<T> {
+        self.rx.next_value()
+    }
+}
+
+impl<T> Iterator for IntoIter<T>
+    where T: DeserializeOwned
+{
+    type Item = T;
+
+    fn next(&mut self) -> Option<T> {
+        self.rx.next_value()
     }
 }

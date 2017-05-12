@@ -94,7 +94,8 @@ mod private;
 pub use self::receiver::Receiver;
 pub use self::sender::Sender;
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
+use serde::de::DeserializeOwned;
 use std::fs;
 use std::path::Path;
 use std::sync;
@@ -132,7 +133,7 @@ pub enum Error {
 /// assert_eq!(Some(9), rcv.iter().next());
 /// ```
 pub fn channel<T>(name: &str, data_dir: &Path) -> Result<(Sender<T>, Receiver<T>), Error>
-    where T: Serialize + Deserialize
+    where T: Serialize + DeserializeOwned
 {
     channel_with_max_bytes(name, data_dir, 1_048_576 * 100)
 }
@@ -150,7 +151,7 @@ pub fn channel_with_max_bytes<T>(name: &str,
                                  data_dir: &Path,
                                  max_bytes: usize)
                                  -> Result<(Sender<T>, Receiver<T>), Error>
-    where T: Serialize + Deserialize
+    where T: Serialize + DeserializeOwned
 {
     let root = data_dir.join(name);
     let snd_root = root.clone();
@@ -319,7 +320,7 @@ mod test {
         let (snd, mut rcv) = channel_with_max_bytes("concurrent_snd_and_rcv_small_max_bytes",
                                                     dir.path(),
                                                     max_bytes)
-            .unwrap();
+                .unwrap();
         let max_thrs = 32;
         let max_sz = 1000;
 
@@ -339,7 +340,9 @@ mod test {
             for _ in 0..(max_sz * max_thrs) {
                 loop {
                     if let Some(nxt) = rcv.iter().next() {
-                        let idx = tst_pylds.binary_search(&nxt).expect("DID NOT FIND ELEMENT");
+                        let idx = tst_pylds
+                            .binary_search(&nxt)
+                            .expect("DID NOT FIND ELEMENT");
                         tst_pylds.remove(idx);
                         break;
                     }
@@ -352,11 +355,11 @@ mod test {
         for i in 0..max_thrs {
             let mut thr_snd = snd.clone();
             joins.push(thread::spawn(move || {
-                let base = i * max_sz;
-                for p in 0..max_sz {
-                    thr_snd.send(base + p);
-                }
-            }));
+                                         let base = i * max_sz;
+                                         for p in 0..max_sz {
+                                             thr_snd.send(base + p);
+                                         }
+                                     }));
         }
 
         // wait until the senders are for sure done
@@ -374,7 +377,7 @@ mod test {
             let (snd, mut rcv) = channel_with_max_bytes("concurrent_snd_and_rcv_small_max_bytes",
                                                         dir.path(),
                                                         max_bytes)
-                .unwrap();
+                    .unwrap();
 
             let max_thrs = 32;
 
@@ -383,20 +386,20 @@ mod test {
             // start our receiver thread
             let total_pylds = evs.len() * max_thrs;
             joins.push(thread::spawn(move || for _ in 0..total_pylds {
-                loop {
-                    if let Some(_) = rcv.iter().next() {
-                        break;
-                    }
-                }
-            }));
+                                         loop {
+                                             if let Some(_) = rcv.iter().next() {
+                                                 break;
+                                             }
+                                         }
+                                     }));
 
             // start all our sender threads and blast away
             for _ in 0..max_thrs {
                 let mut thr_snd = snd.clone();
                 let thr_evs = evs.clone();
                 joins.push(thread::spawn(move || for e in thr_evs {
-                    thr_snd.send(e);
-                }));
+                                             thr_snd.send(e);
+                                         }));
             }
 
             // wait until the senders are for sure done
