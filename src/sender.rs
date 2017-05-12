@@ -28,8 +28,8 @@ pub struct Sender<T> {
     resource_type: PhantomData<T>,
 }
 
-impl<T> Clone for Sender<T>
-    where T: Serialize + Deserialize
+impl<'de, T> Clone for Sender<T>
+    where T: Serialize + Deserialize<'de>
 {
     fn clone(&self) -> Sender<T> {
         Sender::new(self.name.clone(),
@@ -134,14 +134,14 @@ impl<T> Sender<T>
                         // read-only--there's some possibility that this will be
                         // done redundantly, but that's okay--and then read the
                         // current sender_seq_num to get up to date.
-                        let _ =
-                            fs::metadata(&self.path).map(|p| {
-                                                             let mut permissions = p.permissions();
-                                                             permissions.set_readonly(true);
-                                                             let _ =
+                        let _ = fs::metadata(&self.path).map(|p| {
+                                                                 let mut permissions =
+                                                                     p.permissions();
+                                                                 permissions.set_readonly(true);
+                                                                 let _ =
                                                                  fs::set_permissions(&self.path,
                                                                                      permissions);
-                                                         });
+                                                             });
                         if self.seq_num != fslock.sender_seq_num {
                             // This thread is behind the leader. We've got to
                             // set our current notion of seq_num forward and

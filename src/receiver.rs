@@ -1,12 +1,12 @@
 use bincode::deserialize;
-use serde::Deserialize;
-use std::fs;
-use std::io::{BufReader, ErrorKind, Read, SeekFrom, Seek};
-use std::marker::PhantomData;
-use std::path::{Path, PathBuf};
-use std::iter::IntoIterator;
 
 use private;
+use serde::de::DeserializeOwned;
+use std::fs;
+use std::io::{BufReader, ErrorKind, Read, Seek, SeekFrom};
+use std::iter::IntoIterator;
+use std::marker::PhantomData;
+use std::path::{Path, PathBuf};
 
 #[inline]
 fn u8tou32abe(v: &[u8]) -> u32 {
@@ -15,7 +15,8 @@ fn u8tou32abe(v: &[u8]) -> u32 {
 
 #[derive(Debug)]
 /// The 'receive' side of hopper, similar to
-/// [`std::sync::mpsc::Receiver`](https://doc.rust-lang.org/std/sync/mpsc/struct.Receiver.html).
+/// [`std::sync::mpsc::Receiver`](https://doc.rust-lang.
+/// org/std/sync/mpsc/struct.Receiver.html).
 pub struct Receiver<T> {
     root: PathBuf, // directory we store our queues in
     fp: BufReader<fs::File>, // active fp
@@ -24,7 +25,7 @@ pub struct Receiver<T> {
 }
 
 impl<T> Receiver<T>
-    where T: Deserialize
+    where T: DeserializeOwned
 {
     #[doc(hidden)]
     pub fn new(data_dir: &Path, fs_lock: private::FSLock<T>) -> Result<Receiver<T>, super::Error> {
@@ -125,26 +126,26 @@ impl<T> Receiver<T>
             } else {
                 match self.fp.read_exact(&mut sz_buf) {
                     Ok(()) => {
-                    let payload_size_in_bytes = u8tou32abe(&sz_buf);
-                    let mut payload_buf = vec![0; (payload_size_in_bytes as usize)];
-                    match self.fp.read_exact(&mut payload_buf) {
-                        Ok(()) => {
-                            match deserialize(&payload_buf) {
-                                Ok(event) => {
-                                    fslock.receiver_idx = fslock.receiver_idx.map(|x| x + 1);
-                                    fslock.writes_to_read -= 1;
-                                    fslock.disk_writes_to_read -= 1;
-                                    return Some(event);
+                        let payload_size_in_bytes = u8tou32abe(&sz_buf);
+                        let mut payload_buf = vec![0; (payload_size_in_bytes as usize)];
+                        match self.fp.read_exact(&mut payload_buf) {
+                            Ok(()) => {
+                                match deserialize(&payload_buf) {
+                                    Ok(event) => {
+                                        fslock.receiver_idx = fslock.receiver_idx.map(|x| x + 1);
+                                        fslock.writes_to_read -= 1;
+                                        fslock.disk_writes_to_read -= 1;
+                                        return Some(event);
+                                    }
+                                    Err(e) => panic!("Failed decoding. Skipping {:?}", e),
                                 }
-                                Err(e) => panic!("Failed decoding. Skipping {:?}", e),
+                            }
+                            Err(e) => {
+                                panic!("Error, on-disk payload of advertised size not available! \
+                                        Recv failed with error {:?}",
+                                       e);
                             }
                         }
-                        Err(e) => {
-                            panic!("Error, on-disk payload of advertised size not available! \
-                                    Recv failed with error {:?}",
-                                   e);
-                        }
-                    }
                     }
                     Err(e) => {
                         match e.kind() {
@@ -206,44 +207,43 @@ impl<T> Receiver<T>
     }
 }
 
-
 #[derive(Debug)]
-pub struct Iter<'a, T: 'a + Deserialize> {
+pub struct Iter<'a, T: 'a + DeserializeOwned> {
     rx: &'a mut Receiver<T>,
 }
 
-impl<'a, T> Iterator for Iter<'a, T>
-    where T: Deserialize
-{
-    type Item = T;
-
-    fn next(&mut self) -> Option<T> {
-        self.rx.next_value()
-    }
-}
-
 #[derive(Debug)]
-pub struct IntoIter<T: Deserialize> {
+pub struct IntoIter<T: DeserializeOwned> {
     rx: Receiver<T>,
 }
 
-impl<T> Iterator for IntoIter<T>
-    where T: Deserialize
-{
-    type Item = T;
-
-    fn next(&mut self) -> Option<T> {
-        self.rx.next_value()
-    }
-}
-
 impl<T> IntoIterator for Receiver<T>
-    where T: Deserialize
+    where T: DeserializeOwned
 {
     type Item = T;
     type IntoIter = IntoIter<T>;
 
     fn into_iter(self) -> IntoIter<T> {
         IntoIter { rx: self }
+    }
+}
+
+impl<'a, T> Iterator for Iter<'a, T>
+    where T: DeserializeOwned
+{
+    type Item = T;
+
+    fn next(&mut self) -> Option<T> {
+        self.rx.next_value()
+    }
+}
+
+impl<T> Iterator for IntoIter<T>
+    where T: DeserializeOwned
+{
+    type Item = T;
+
+    fn next(&mut self) -> Option<T> {
+        self.rx.next_value()
     }
 }

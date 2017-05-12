@@ -94,7 +94,8 @@ mod private;
 pub use self::receiver::Receiver;
 pub use self::sender::Sender;
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
+use serde::de::DeserializeOwned;
 use std::fs;
 use std::path::Path;
 use std::sync;
@@ -132,7 +133,7 @@ pub enum Error {
 /// assert_eq!(Some(9), rcv.iter().next());
 /// ```
 pub fn channel<T>(name: &str, data_dir: &Path) -> Result<(Sender<T>, Receiver<T>), Error>
-    where T: Serialize + Deserialize
+    where T: Serialize + DeserializeOwned
 {
     channel_with_max_bytes(name, data_dir, 1_048_576 * 100)
 }
@@ -150,7 +151,7 @@ pub fn channel_with_max_bytes<T>(name: &str,
                                  data_dir: &Path,
                                  max_bytes: usize)
                                  -> Result<(Sender<T>, Receiver<T>), Error>
-    where T: Serialize + Deserialize
+    where T: Serialize + DeserializeOwned
 {
     let root = data_dir.join(name);
     let snd_root = root.clone();
