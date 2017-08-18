@@ -102,8 +102,7 @@ impl<T> Receiver<T>
             fslock.receiver_read_id = fslock.receiver_read_id.wrapping_add(1);
 
             if fslock.receiver_idx.is_none() {
-                let bnds = fslock.write_bounds.pop_back().expect("NO BOUND");
-                fslock.receiver_idx = Some(bnds);
+                fslock.receiver_idx = Some(fslock.write_bound.expect("NO BOUND"));
             }
             if fslock.receiver_idx.unwrap() < fslock.in_memory_idx {
                 let event = fslock
