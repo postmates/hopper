@@ -7,7 +7,7 @@ pub struct FsSync<T> {
     pub receiver_idx: Option<usize>,
     pub receiver_max_idx: Option<usize>,
 
-    pub write_bounds: VecDeque<(usize, usize)>, // yikes, unbounded
+    pub write_bounds: VecDeque<usize>, // yikes, unbounded
     pub writes_to_read: usize,
 
     pub sender_idx: usize,
