@@ -7,7 +7,7 @@ pub struct FsSync<T> {
     pub receiver_idx: Option<usize>,
     pub receiver_max_idx: Option<usize>,
 
-    pub write_bounds: VecDeque<(usize, usize)>, // yikes, unbounded
+    pub write_bound: Option<usize>,
     pub writes_to_read: usize,
 
     pub sender_idx: usize,
@@ -28,7 +28,7 @@ impl<T> FsSync<T> {
             receiver_idx: None,
             receiver_max_idx: None,
 
-            write_bounds: VecDeque::with_capacity(128),
+            write_bound: None,
             writes_to_read: 0,
 
             sender_idx: 0,

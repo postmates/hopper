@@ -177,17 +177,12 @@ impl<T> Sender<T>
             }
         }
         fslock.writes_to_read += 1;
-        if fslock.sender_captured_recv_id == fslock.receiver_read_id &&
-           !fslock.write_bounds.is_empty() {
-            fslock.sender_idx += 1;
-            fslock.write_bounds[0].1 = fslock.sender_idx;
-        } else {
+        if (fslock.sender_captured_recv_id != fslock.receiver_read_id) ||
+            fslock.write_bound.is_none() {
             fslock.sender_captured_recv_id = fslock.receiver_read_id;
-            fslock
-                .write_bounds
-                .push_front((fslock.sender_idx, fslock.sender_idx));
-            fslock.sender_idx += 1;
+            fslock.write_bound = Some(fslock.sender_idx);
         }
+        fslock.sender_idx += 1;
     }
 
     /// Return the sender's name
