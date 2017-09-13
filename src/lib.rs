@@ -1,11 +1,6 @@
-#![deny(missing_docs,
-        missing_debug_implementations,
-        missing_copy_implementations,
-        trivial_numeric_casts,
-        unsafe_code,
-        unstable_features,
-        unused_import_braces,
-        unused_qualifications)]
+#![deny(missing_docs, missing_debug_implementations, missing_copy_implementations,
+       trivial_numeric_casts, unsafe_code, unstable_features, unused_import_braces,
+       unused_qualifications)]
 //! hopper - an unbounded mpsc with bounded memory
 //!
 //! This module provides a version of the rust standard
@@ -133,7 +128,8 @@ pub enum Error {
 /// assert_eq!(Some(9), rcv.iter().next());
 /// ```
 pub fn channel<T>(name: &str, data_dir: &Path) -> Result<(Sender<T>, Receiver<T>), Error>
-    where T: Serialize + DeserializeOwned
+where
+    T: Serialize + DeserializeOwned,
 {
     channel_with_max_bytes(name, data_dir, 1_048_576 * 100)
 }
@@ -147,11 +143,13 @@ pub fn channel<T>(name: &str, data_dir: &Path) -> Result<(Sender<T>, Receiver<T>
 /// This function gives control to the user over the maximum size of hopper's
 /// queue files as `max_bytes`, though not the total disk allocation that may be
 /// made.
-pub fn channel_with_max_bytes<T>(name: &str,
-                                 data_dir: &Path,
-                                 max_bytes: usize)
-                                 -> Result<(Sender<T>, Receiver<T>), Error>
-    where T: Serialize + DeserializeOwned
+pub fn channel_with_max_bytes<T>(
+    name: &str,
+    data_dir: &Path,
+    max_bytes: usize,
+) -> Result<(Sender<T>, Receiver<T>), Error>
+where
+    T: Serialize + DeserializeOwned,
 {
     let root = data_dir.join(name);
     let snd_root = root.clone();
@@ -170,8 +168,8 @@ pub fn channel_with_max_bytes<T>(name: &str,
 
 #[cfg(test)]
 mod test {
-    extern crate tempdir;
     extern crate quickcheck;
+    extern crate tempdir;
 
     use std::thread;
     use super::{channel, channel_with_max_bytes};
@@ -317,10 +315,11 @@ mod test {
         let max_bytes: usize = 512;
         let dir = tempdir::TempDir::new("hopper").unwrap();
         println!("CONCURRENT SND_RECV TESTDIR: {:?}", dir);
-        let (snd, mut rcv) = channel_with_max_bytes("concurrent_snd_and_rcv_small_max_bytes",
-                                                    dir.path(),
-                                                    max_bytes)
-                .unwrap();
+        let (snd, mut rcv) = channel_with_max_bytes(
+            "concurrent_snd_and_rcv_small_max_bytes",
+            dir.path(),
+            max_bytes,
+        ).unwrap();
         let max_thrs = 32;
         let max_sz = 1000;
 
@@ -340,9 +339,7 @@ mod test {
             for _ in 0..(max_sz * max_thrs) {
                 loop {
                     if let Some(nxt) = rcv.iter().next() {
-                        let idx = tst_pylds
-                            .binary_search(&nxt)
-                            .expect("DID NOT FIND ELEMENT");
+                        let idx = tst_pylds.binary_search(&nxt).expect("DID NOT FIND ELEMENT");
                         tst_pylds.remove(idx);
                         break;
                     }
@@ -355,11 +352,11 @@ mod test {
         for i in 0..max_thrs {
             let mut thr_snd = snd.clone();
             joins.push(thread::spawn(move || {
-                                         let base = i * max_sz;
-                                         for p in 0..max_sz {
-                                             thr_snd.send(base + p);
-                                         }
-                                     }));
+                let base = i * max_sz;
+                for p in 0..max_sz {
+                    thr_snd.send(base + p);
+                }
+            }));
         }
 
         // wait until the senders are for sure done
@@ -374,10 +371,11 @@ mod test {
             let max_bytes: usize = 512;
             let dir = tempdir::TempDir::new("hopper").unwrap();
             println!("CONCURRENT SND_RECV TESTDIR: {:?}", dir);
-            let (snd, mut rcv) = channel_with_max_bytes("concurrent_snd_and_rcv_small_max_bytes",
-                                                        dir.path(),
-                                                        max_bytes)
-                    .unwrap();
+            let (snd, mut rcv) = channel_with_max_bytes(
+                "concurrent_snd_and_rcv_small_max_bytes",
+                dir.path(),
+                max_bytes,
+            ).unwrap();
 
             let max_thrs = 32;
 
@@ -386,20 +384,20 @@ mod test {
             // start our receiver thread
             let total_pylds = evs.len() * max_thrs;
             joins.push(thread::spawn(move || for _ in 0..total_pylds {
-                                         loop {
-                                             if let Some(_) = rcv.iter().next() {
-                                                 break;
-                                             }
-                                         }
-                                     }));
+                loop {
+                    if let Some(_) = rcv.iter().next() {
+                        break;
+                    }
+                }
+            }));
 
             // start all our sender threads and blast away
             for _ in 0..max_thrs {
                 let mut thr_snd = snd.clone();
                 let thr_evs = evs.clone();
                 joins.push(thread::spawn(move || for e in thr_evs {
-                                             thr_snd.send(e);
-                                         }));
+                    thr_snd.send(e);
+                }));
             }
 
             // wait until the senders are for sure done

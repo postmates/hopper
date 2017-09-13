@@ -1,6 +1,6 @@
 mod integration {
-    extern crate tempdir;
     extern crate hopper;
+    extern crate tempdir;
 
     use self::hopper::channel_with_max_bytes;
     use std::thread;
@@ -36,10 +36,11 @@ mod integration {
             let max_bytes = pyld[2] as usize;
 
             let dir = tempdir::TempDir::new("hopper").unwrap();
-            let (snd, mut rcv) = channel_with_max_bytes("concurrent_snd_and_rcv_small_max_bytes",
-                                                        dir.path(),
-                                                        max_bytes)
-                    .unwrap();
+            let (snd, mut rcv) = channel_with_max_bytes(
+                "concurrent_snd_and_rcv_small_max_bytes",
+                dir.path(),
+                max_bytes,
+            ).unwrap();
 
             let mut joins = Vec::new();
 
@@ -66,8 +67,8 @@ mod integration {
             for _ in 0..max_thrs {
                 let mut thr_snd = snd.clone();
                 joins.push(thread::spawn(move || for i in 0..cap {
-                                             thr_snd.send(i);
-                                         }));
+                    thr_snd.send(i);
+                }));
             }
 
             // wait until the senders are for sure done
