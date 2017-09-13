@@ -1,5 +1,7 @@
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
+use std::io::BufWriter;
+use std::fs;
 
 #[derive(Default, Debug)]
 pub struct FsSync<T> {
@@ -12,6 +14,7 @@ pub struct FsSync<T> {
 
     pub sender_idx: usize,
     pub sender_captured_recv_id: u64,
+    pub sender_fp: Option<BufWriter<fs::File>>,
 
     pub in_memory_idx: usize,
     pub bytes_written: usize,
@@ -33,6 +36,7 @@ impl<T> FsSync<T> {
 
             sender_idx: 0,
             sender_captured_recv_id: 0,
+            sender_fp: None,
 
             in_memory_idx: cap,
             bytes_written: 0,

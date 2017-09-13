@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 #[inline]
 fn u8tou32abe(v: &[u8]) -> u32 {
-    (v[3] as u32) + ((v[2] as u32) << 8) + ((v[1] as u32) << 24) + ((v[0] as u32) << 16)
+    u32::from(v[3]) + (u32::from(v[2]) << 8) + (u32::from(v[1]) << 24) + (u32::from(v[0]) << 16)
 }
 
 #[derive(Debug)]
@@ -18,14 +18,15 @@ fn u8tou32abe(v: &[u8]) -> u32 {
 /// [`std::sync::mpsc::Receiver`](https://doc.rust-lang.
 /// org/std/sync/mpsc/struct.Receiver.html).
 pub struct Receiver<T> {
-    root: PathBuf, // directory we store our queues in
+    root: PathBuf,           // directory we store our queues in
     fp: BufReader<fs::File>, // active fp
     fs_lock: private::FSLock<T>,
     resource_type: PhantomData<T>,
 }
 
 impl<T> Receiver<T>
-    where T: DeserializeOwned
+where
+    T: DeserializeOwned,
 {
     #[doc(hidden)]
     pub fn new(data_dir: &Path, fs_lock: private::FSLock<T>) -> Result<Receiver<T>, super::Error> {
@@ -74,18 +75,16 @@ impl<T> Receiver<T>
             .expect("could not get to end of file");
 
         Ok(Receiver {
-               root: data_dir.to_path_buf(),
-               fp: BufReader::new(fp),
-               resource_type: PhantomData,
-               fs_lock: fs_lock,
-           })
+            root: data_dir.to_path_buf(),
+            fp: BufReader::new(fp),
+            resource_type: PhantomData,
+            fs_lock: fs_lock,
+        })
     }
 
     fn next_value(&mut self) -> Option<T> {
         let mut sz_buf = [0; 4];
-        let mut syn = self.fs_lock
-            .lock()
-            .expect("Receiver fs_lock was poisoned!");
+        let mut syn = self.fs_lock.lock().expect("Receiver fs_lock was poisoned!");
         // The receive loop
         //
         // The receiver works by regularly attempting to read a payload from its
@@ -113,7 +112,8 @@ impl<T> Receiver<T>
                 fslock.receiver_idx = fslock.receiver_idx.map(|x| x + 1);
                 return Some(event);
             } else if (fslock.disk_writes_to_read == 0) &&
-                      (fslock.receiver_idx.unwrap() >= fslock.in_memory_idx) {
+                (fslock.receiver_idx.unwrap() >= fslock.in_memory_idx)
+            {
                 let event = fslock
                     .disk_buffer
                     .pop_front()
@@ -127,21 +127,21 @@ impl<T> Receiver<T>
                         let payload_size_in_bytes = u8tou32abe(&sz_buf);
                         let mut payload_buf = vec![0; (payload_size_in_bytes as usize)];
                         match self.fp.read_exact(&mut payload_buf) {
-                            Ok(()) => {
-                                match deserialize(&payload_buf) {
-                                    Ok(event) => {
-                                        fslock.receiver_idx = fslock.receiver_idx.map(|x| x + 1);
-                                        fslock.writes_to_read -= 1;
-                                        fslock.disk_writes_to_read -= 1;
-                                        return Some(event);
-                                    }
-                                    Err(e) => panic!("Failed decoding. Skipping {:?}", e),
+                            Ok(()) => match deserialize(&payload_buf) {
+                                Ok(event) => {
+                                    fslock.receiver_idx = fslock.receiver_idx.map(|x| x + 1);
+                                    fslock.writes_to_read -= 1;
+                                    fslock.disk_writes_to_read -= 1;
+                                    return Some(event);
                                 }
-                            }
+                                Err(e) => panic!("Failed decoding. Skipping {:?}", e),
+                            },
                             Err(e) => {
-                                panic!("Error, on-disk payload of advertised size not available! \
-                                        Recv failed with error {:?}",
-                                       e);
+                                panic!(
+                                    "Error, on-disk payload of advertised size not available! \
+                                     Recv failed with error {:?}",
+                                    e
+                                );
                             }
                         }
                     }
@@ -152,11 +152,10 @@ impl<T> Receiver<T>
                                 // on us. We check the metadata condition of the
                                 // file and, if we find it read-only, switch on over
                                 // to a new log file.
-                                let metadata =
-                                    self.fp
-                                        .get_ref()
-                                        .metadata()
-                                        .expect("could not get metadata at UnexpectedEof");
+                                let metadata = self.fp
+                                    .get_ref()
+                                    .metadata()
+                                    .expect("could not get metadata at UnexpectedEof");
                                 if metadata.permissions().readonly() {
                                     // TODO all these unwraps are a silent death
                                     let seq_num = fs::read_dir(&self.root)
@@ -216,7 +215,8 @@ pub struct IntoIter<T: DeserializeOwned> {
 }
 
 impl<T> IntoIterator for Receiver<T>
-    where T: DeserializeOwned
+where
+    T: DeserializeOwned,
 {
     type Item = T;
     type IntoIter = IntoIter<T>;
@@ -227,7 +227,8 @@ impl<T> IntoIterator for Receiver<T>
 }
 
 impl<'a, T> Iterator for Iter<'a, T>
-    where T: DeserializeOwned
+where
+    T: DeserializeOwned,
 {
     type Item = T;
 
@@ -237,7 +238,8 @@ impl<'a, T> Iterator for Iter<'a, T>
 }
 
 impl<T> Iterator for IntoIter<T>
-    where T: DeserializeOwned
+where
+    T: DeserializeOwned,
 {
     type Item = T;
 
