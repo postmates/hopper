@@ -1,5 +1,4 @@
-use bincode::deserialize;
-
+use zlo::deserialize;
 use private;
 use serde::de::DeserializeOwned;
 use std::fs;
@@ -111,8 +110,8 @@ where
                 fslock.writes_to_read -= 1;
                 fslock.receiver_idx = fslock.receiver_idx.map(|x| x + 1);
                 return Some(event);
-            } else if (fslock.disk_writes_to_read == 0) &&
-                (fslock.receiver_idx.unwrap() >= fslock.in_memory_idx)
+            } else if (fslock.disk_writes_to_read == 0)
+                && (fslock.receiver_idx.unwrap() >= fslock.in_memory_idx)
             {
                 let event = fslock
                     .disk_buffer
