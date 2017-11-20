@@ -1,5 +1,4 @@
-use bincode::Infinite;
-use bincode::serialize_into;
+use zlo::{serialize_into, Infinite};
 use private;
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -32,11 +31,12 @@ where
     T: Serialize + Deserialize<'de>,
 {
     fn clone(&self) -> Sender<T> {
+        use std::sync::Arc;
         Sender::new(
             self.name.clone(),
             &self.root,
             self.max_bytes,
-            self.fs_lock.clone(),
+            Arc::clone(&self.fs_lock),
         ).expect("COULD NOT CLONE")
     }
 }
@@ -55,7 +55,8 @@ where
     where
         S: Into<String> + fmt::Display,
     {
-        let init_fs_lock = fs_lock.clone();
+        use std::sync::Arc;
+        let init_fs_lock = Arc::clone(&fs_lock);
         let mut syn = init_fs_lock.lock().expect("Sender fs_lock poisoned");
         if !data_dir.is_dir() {
             return Err(super::Error::NoSuchDirectory);
@@ -128,9 +129,8 @@ where
                     // to decide it has hit the end of its log file--and create
                     // a new log file.
                     let bytes_written = fslock.bytes_written + t.len();
-                    if (bytes_written > self.max_bytes) ||
-                        (self.seq_num != fslock.sender_seq_num) ||
-                        fslock.sender_fp.is_none()
+                    if (bytes_written > self.max_bytes) || (self.seq_num != fslock.sender_seq_num)
+                        || fslock.sender_fp.is_none()
                     {
                         // Once we've gone over the write limit for our current
                         // file or find that we've gotten behind the current
@@ -187,8 +187,8 @@ where
             }
         }
         fslock.writes_to_read += 1;
-        if (fslock.sender_captured_recv_id != fslock.receiver_read_id) ||
-            fslock.write_bound.is_none()
+        if (fslock.sender_captured_recv_id != fslock.receiver_read_id)
+            || fslock.write_bound.is_none()
         {
             fslock.sender_captured_recv_id = fslock.receiver_read_id;
             fslock.write_bound = Some(fslock.sender_idx);

@@ -1,6 +1,6 @@
 #![deny(missing_docs, missing_debug_implementations, missing_copy_implementations,
-       trivial_numeric_casts, unsafe_code, unstable_features, unused_import_braces,
-       unused_qualifications)]
+        trivial_numeric_casts, unsafe_code, unstable_features, unused_import_braces,
+        unused_qualifications)]
 //! hopper - an unbounded mpsc with bounded memory
 //!
 //! This module provides a version of the rust standard
@@ -79,8 +79,8 @@
 //! hopper limits itself to one exclusive Sender or one exclusive Receiver at a
 //! time. This potentially limits the concurrency of mpsc but maintains data
 //! integrity. We are open to improvements in this area.
-extern crate bincode;
 extern crate serde;
+extern crate zlo;
 
 mod receiver;
 mod sender;
@@ -151,6 +151,8 @@ pub fn channel_with_max_bytes<T>(
 where
     T: Serialize + DeserializeOwned,
 {
+    use std::sync::Arc; 
+
     let root = data_dir.join(name);
     let snd_root = root.clone();
     let rcv_root = root.clone();
@@ -161,7 +163,7 @@ where
     let sz = mem::size_of::<T>();
     let max_bytes = if max_bytes < sz { sz } else { max_bytes };
     let fs_lock = sync::Arc::new(sync::Mutex::new(private::FsSync::new(cap)));
-    let sender = try!(Sender::new(name, &snd_root, max_bytes, fs_lock.clone()));
+    let sender = try!(Sender::new(name, &snd_root, max_bytes, Arc::clone(&fs_lock)));
     let receiver = try!(Receiver::new(&rcv_root, fs_lock));
     Ok((sender, receiver))
 }
