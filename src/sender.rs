@@ -1,4 +1,4 @@
-use zlo::{serialize_into, Infinite};
+use bincode::{serialize_into, Infinite};
 use private;
 use serde::{Deserialize, Serialize};
 use std::fmt;

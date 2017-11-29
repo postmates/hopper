@@ -1,4 +1,4 @@
-use zlo::deserialize;
+use bincode::deserialize;
 use private;
 use serde::de::DeserializeOwned;
 use std::fs;

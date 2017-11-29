@@ -80,7 +80,7 @@
 //! time. This potentially limits the concurrency of mpsc but maintains data
 //! integrity. We are open to improvements in this area.
 extern crate serde;
-extern crate zlo;
+extern crate bincode;
 
 mod receiver;
 mod sender;
