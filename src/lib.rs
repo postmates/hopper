@@ -1,5 +1,5 @@
 #![deny(missing_docs, missing_debug_implementations, missing_copy_implementations,
-        trivial_numeric_casts, unsafe_code, unstable_features, unused_import_braces,
+        trivial_numeric_casts, unstable_features, unused_import_braces,
         unused_qualifications)]
 //! hopper - an unbounded mpsc with bounded memory
 //!
@@ -81,10 +81,11 @@
 //! integrity. We are open to improvements in this area.
 extern crate serde;
 extern crate bincode;
+extern crate memmap;
 
+mod common;
 mod receiver;
 mod sender;
-mod private;
 
 pub use self::receiver::Receiver;
 pub use self::sender::Sender;
@@ -93,8 +94,35 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use std::fs;
 use std::path::Path;
-use std::sync;
 use std::mem;
+
+// Here's how I think it'll work:
+//
+// There's an 'index' file. This is two u32s back to back. The left u32 is the
+// 'sender' index, the right is the 'receiver' index. It looks like this
+// on-disk:
+//
+//    sender                          receiver 
+//  |-------------------------------|-------------------------------|
+//    u32                             u32
+//
+// There's concurrent access to the sender side of things, singleton access to
+// receiver. The index file means we don't have to poll the disk to find our
+// location.
+//
+// The queue files look like this:
+//
+//   size (31 bits)    blob 
+// |------------------------------\-|------------ ... --------------|
+//   u16                           ^ read
+//
+// The 'size' gives the total size of the blob and must fit into 31 bits. This
+// limits a blob to 268 megabytes. That's... probably enough. 'size' is set by a
+// sender and read by the receiver. The 'read' signals to the receiver whether
+// it has read this record yet or not. It is set to 0 by a sender on write, set
+// to 1 by the receiver on read. 'read' allows us to seek through the structure
+// for our last read position.
+
 
 /// Defines the errors that hopper will bubble up
 ///
@@ -146,25 +174,24 @@ where
 pub fn channel_with_max_bytes<T>(
     name: &str,
     data_dir: &Path,
-    max_bytes: usize,
+    max_bytes: u32,
 ) -> Result<(Sender<T>, Receiver<T>), Error>
 where
     T: Serialize + DeserializeOwned,
 {
-    use std::sync::Arc; 
-
     let root = data_dir.join(name);
-    let snd_root = root.clone();
-    let rcv_root = root.clone();
+    let sz = mem::size_of::<T>() as u32;
+    let max_bytes = if max_bytes < sz { sz } else { max_bytes };
+    let config = common::Config {
+        maximum_queue_in_bytes: max_bytes,
+        root_dir: root.clone(),
+    };
     if !root.is_dir() {
         fs::create_dir_all(root).expect("could not create directory");
     }
-    let cap: usize = 1024;
-    let sz = mem::size_of::<T>();
-    let max_bytes = if max_bytes < sz { sz } else { max_bytes };
-    let fs_lock = sync::Arc::new(sync::Mutex::new(private::FsSync::new(cap)));
-    let sender = try!(Sender::new(name, &snd_root, max_bytes, Arc::clone(&fs_lock)));
-    let receiver = try!(Receiver::new(&rcv_root, fs_lock));
+
+    let sender = Sender::new(config.clone())?;
+    let receiver = Receiver::new(config)?;
     Ok((sender, receiver))
 }
 
