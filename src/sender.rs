@@ -1,4 +1,6 @@
-use bincode::{serialize_into, Infinite};
+use std::io::{Cursor, Seek, SeekFrom};
+use bincode::{serialize_into, serialized_size, Infinite};
+use byteorder::{BigEndian, WriteBytesExt};
 use private;
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -6,11 +8,6 @@ use std::fs;
 use std::io::{BufWriter, Write};
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
-
-#[inline]
-fn u32tou8abe(v: u32) -> [u8; 4] {
-    [v as u8, (v >> 8) as u8, (v >> 24) as u8, (v >> 16) as u8]
-}
 
 #[derive(Debug)]
 /// The 'send' side of hopper, similar to
@@ -57,7 +54,7 @@ where
     {
         use std::sync::Arc;
         let init_fs_lock = Arc::clone(&fs_lock);
-        let mut syn = init_fs_lock.lock().expect("Sender fs_lock poisoned");
+        let mut syn = init_fs_lock.lock();
         if !data_dir.is_dir() {
             return Err(super::Error::NoSuchDirectory);
         }
@@ -103,7 +100,7 @@ where
     ///  [u8] payload
     ///
     pub fn send(&mut self, event: T) {
-        let mut syn = self.fs_lock.lock().expect("Sender fs_lock poisoned");
+        let mut syn = self.fs_lock.lock();
         let fslock = &mut (*syn);
 
         if fslock.sender_idx < fslock.in_memory_idx {
@@ -111,24 +108,18 @@ where
         } else {
             fslock.disk_buffer.push_back(event);
             if fslock.disk_buffer.len() >= fslock.in_memory_idx {
+                let mut buf: Cursor<Vec<u8>> = Cursor::new(Vec::with_capacity(64));
                 while let Some(ev) = fslock.disk_buffer.pop_front() {
-                    let mut pyld = Vec::with_capacity(64);
-                    serialize_into(&mut pyld, &ev, Infinite).expect("could not serialize");
-                    // NOTE The conversion of t.len to u32 and usize is _only_
-                    // safe when u32 <= usize. That's very likely to hold true
-                    // for machines--for now?--that hopper will run on. However!
-                    let pyld_sz_bytes: [u8; 4] = u32tou8abe(pyld.len() as u32);
-                    let mut t = vec![0, 0, 0, 0];
-                    t[0] = pyld_sz_bytes[3];
-                    t[1] = pyld_sz_bytes[2];
-                    t[2] = pyld_sz_bytes[1];
-                    t[3] = pyld_sz_bytes[0];
-                    t.append(&mut pyld);
+                    buf.seek(SeekFrom::Start(0)).unwrap();
+                    let payload_len: u64 = serialized_size(&ev);
+                    buf.write_u64::<BigEndian>(payload_len)
+                        .expect("could not write size prefix");
+                    serialize_into(&mut buf, &ev, Infinite).expect("could not serialize");
                     // If the individual sender writes enough to go over the max
                     // we mark the file read-only--which will help the receiver
                     // to decide it has hit the end of its log file--and create
                     // a new log file.
-                    let bytes_written = fslock.bytes_written + t.len();
+                    let bytes_written = fslock.bytes_written + buf.get_ref().len();
                     if (bytes_written > self.max_bytes) || (self.seq_num != fslock.sender_seq_num)
                         || fslock.sender_fp.is_none()
                     {
@@ -173,7 +164,8 @@ where
 
                     assert!(fslock.sender_fp.is_some());
                     if let Some(ref mut fp) = fslock.sender_fp {
-                        match fp.write(&t[..]) {
+                        let max: usize = payload_len as usize + ::std::mem::size_of::<u64>();
+                        match fp.write(&buf.get_ref()[..max]) {
                             Ok(written) => fslock.bytes_written += written,
                             Err(e) => panic!("Write error: {}", e),
                         }

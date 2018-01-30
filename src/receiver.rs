@@ -1,16 +1,12 @@
 use bincode::deserialize;
 use private;
+use byteorder::{BigEndian, ReadBytesExt};
 use serde::de::DeserializeOwned;
 use std::fs;
 use std::io::{BufReader, ErrorKind, Read, Seek, SeekFrom};
 use std::iter::IntoIterator;
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
-
-#[inline]
-fn u8tou32abe(v: &[u8]) -> u32 {
-    u32::from(v[3]) + (u32::from(v[2]) << 8) + (u32::from(v[1]) << 24) + (u32::from(v[0]) << 16)
-}
 
 #[derive(Debug)]
 /// The 'receive' side of hopper, similar to
@@ -29,7 +25,7 @@ where
 {
     #[doc(hidden)]
     pub fn new(data_dir: &Path, fs_lock: private::FSLock<T>) -> Result<Receiver<T>, super::Error> {
-        let _ = fs_lock.lock().expect("Sender fs_lock poisoned");
+        let _ = fs_lock.lock();
         if !data_dir.is_dir() {
             return Err(super::Error::NoSuchDirectory);
         }
@@ -82,8 +78,7 @@ where
     }
 
     fn next_value(&mut self) -> Option<T> {
-        let mut sz_buf = [0; 4];
-        let mut syn = self.fs_lock.lock().expect("Receiver fs_lock was poisoned!");
+        let mut syn = self.fs_lock.lock();
         // The receive loop
         //
         // The receiver works by regularly attempting to read a payload from its
@@ -121,11 +116,10 @@ where
                 fslock.receiver_idx = fslock.receiver_idx.map(|x| x + 1);
                 return Some(event);
             } else {
-                match self.fp.read_exact(&mut sz_buf) {
-                    Ok(()) => {
-                        let payload_size_in_bytes = u8tou32abe(&sz_buf);
-                        let mut payload_buf = vec![0; (payload_size_in_bytes as usize)];
-                        match self.fp.read_exact(&mut payload_buf) {
+                match self.fp.read_u64::<BigEndian>() {
+                    Ok(payload_size_in_bytes) => {
+                        let mut payload_buf = vec![0; payload_size_in_bytes as usize];
+                        match self.fp.read_exact(&mut payload_buf[..]) {
                             Ok(()) => match deserialize(&payload_buf) {
                                 Ok(event) => {
                                     fslock.receiver_idx = fslock.receiver_idx.map(|x| x + 1);
@@ -193,7 +187,6 @@ where
         }
         None
     }
-
 
     /// An iterator over messages on a receiver, this iterator will block
     /// whenever `next` is called, waiting for a new message, and `None` will be

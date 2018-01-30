@@ -79,8 +79,10 @@
 //! hopper limits itself to one exclusive Sender or one exclusive Receiver at a
 //! time. This potentially limits the concurrency of mpsc but maintains data
 //! integrity. We are open to improvements in this area.
-extern crate serde;
 extern crate bincode;
+extern crate byteorder;
+extern crate parking_lot;
+extern crate serde;
 
 mod receiver;
 mod sender;
@@ -88,13 +90,13 @@ mod private;
 
 pub use self::receiver::Receiver;
 pub use self::sender::Sender;
-
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use std::fs;
+use std::mem;
 use std::path::Path;
 use std::sync;
-use std::mem;
+use parking_lot::Mutex;
 
 /// Defines the errors that hopper will bubble up
 ///
@@ -151,7 +153,7 @@ pub fn channel_with_max_bytes<T>(
 where
     T: Serialize + DeserializeOwned,
 {
-    use std::sync::Arc; 
+    use std::sync::Arc;
 
     let root = data_dir.join(name);
     let snd_root = root.clone();
@@ -162,8 +164,13 @@ where
     let cap: usize = 1024;
     let sz = mem::size_of::<T>();
     let max_bytes = if max_bytes < sz { sz } else { max_bytes };
-    let fs_lock = sync::Arc::new(sync::Mutex::new(private::FsSync::new(cap)));
-    let sender = try!(Sender::new(name, &snd_root, max_bytes, Arc::clone(&fs_lock)));
+    let fs_lock = sync::Arc::new(Mutex::new(private::FsSync::new(cap)));
+    let sender = try!(Sender::new(
+        name,
+        &snd_root,
+        max_bytes,
+        Arc::clone(&fs_lock)
+    ));
     let receiver = try!(Receiver::new(&rcv_root, fs_lock));
     Ok((sender, receiver))
 }
@@ -173,9 +180,9 @@ mod test {
     extern crate quickcheck;
     extern crate tempdir;
 
-    use std::thread;
-    use super::{channel, channel_with_max_bytes};
     use self::quickcheck::{QuickCheck, TestResult};
+    use super::{channel, channel_with_max_bytes};
+    use std::thread;
 
     #[test]
     fn one_item_round_trip() {
@@ -385,10 +392,12 @@ mod test {
 
             // start our receiver thread
             let total_pylds = evs.len() * max_thrs;
-            joins.push(thread::spawn(move || for _ in 0..total_pylds {
-                loop {
-                    if let Some(_) = rcv.iter().next() {
-                        break;
+            joins.push(thread::spawn(move || {
+                for _ in 0..total_pylds {
+                    loop {
+                        if let Some(_) = rcv.iter().next() {
+                            break;
+                        }
                     }
                 }
             }));
@@ -397,8 +406,10 @@ mod test {
             for _ in 0..max_thrs {
                 let mut thr_snd = snd.clone();
                 let thr_evs = evs.clone();
-                joins.push(thread::spawn(move || for e in thr_evs {
-                    thr_snd.send(e);
+                joins.push(thread::spawn(move || {
+                    for e in thr_evs {
+                        thr_snd.send(e);
+                    }
                 }));
             }
 
