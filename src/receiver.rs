@@ -10,13 +10,13 @@ use std::path::{Path, PathBuf};
 
 #[derive(Debug)]
 /// The 'receive' side of hopper, similar to
-/// [`std::sync::mpsc::Receiver`](https://doc.rust-lang.
-/// org/std/sync/mpsc/struct.Receiver.html).
+/// [`std::sync::mpsc::Receiver`](https://doc.rust-lang.org/std/sync/mpsc/struct.Receiver.html).
 pub struct Receiver<T> {
     root: PathBuf,           // directory we store our queues in
     fp: BufReader<fs::File>, // active fp
     fs_lock: private::FSLock<T>,
     resource_type: PhantomData<T>,
+    in_memory_limit: usize,
 }
 
 impl<T> Receiver<T>
@@ -24,7 +24,11 @@ where
     T: DeserializeOwned,
 {
     #[doc(hidden)]
-    pub fn new(data_dir: &Path, fs_lock: private::FSLock<T>) -> Result<Receiver<T>, super::Error> {
+    pub fn new(
+        data_dir: &Path,
+        in_memory_limit: usize,
+        fs_lock: private::FSLock<T>,
+    ) -> Result<Receiver<T>, super::Error> {
         let _ = fs_lock.lock();
         if !data_dir.is_dir() {
             return Err(super::Error::NoSuchDirectory);
@@ -73,12 +77,13 @@ where
             root: data_dir.to_path_buf(),
             fp: BufReader::new(fp),
             resource_type: PhantomData,
+            in_memory_limit: in_memory_limit,
             fs_lock: fs_lock,
         })
     }
 
     fn next_value(&mut self) -> Option<T> {
-        let mut syn = self.fs_lock.lock();
+        let mut syn = self.fs_lock.lock().unwrap();
         // The receive loop
         //
         // The receiver works by regularly attempting to read a payload from its
@@ -90,40 +95,16 @@ where
         // written to. It's safe for the Receiver to declare the log done by
         // deleting it and moving on to the next file.
         let fslock = &mut (*syn);
-
-        while fslock.writes_to_read > 0 {
-            fslock.receiver_read_id = fslock.receiver_read_id.wrapping_add(1);
-
-            if fslock.receiver_idx.is_none() {
-                fslock.receiver_idx = Some(fslock.write_bound.expect("NO BOUND"));
-            }
-            if fslock.receiver_idx.unwrap() < fslock.in_memory_idx {
-                let event = fslock
-                    .mem_buffer
-                    .pop_front()
-                    .expect("there was not an event in the in-memory");
-                fslock.writes_to_read -= 1;
-                fslock.receiver_idx = fslock.receiver_idx.map(|x| x + 1);
-                return Some(event);
-            } else if (fslock.disk_writes_to_read == 0)
-                && (fslock.receiver_idx.unwrap() >= fslock.in_memory_idx)
-            {
-                let event = fslock
-                    .disk_buffer
-                    .pop_front()
-                    .expect("there was not an event in the disk buffer!");
-                fslock.writes_to_read -= 1;
-                fslock.receiver_idx = fslock.receiver_idx.map(|x| x + 1);
-                return Some(event);
-            } else {
+        if fslock.disk_writes_to_read == 0 {
+            fslock.mem_buffer.pop_front()
+        } else {
+            loop {
                 match self.fp.read_u64::<BigEndian>() {
                     Ok(payload_size_in_bytes) => {
                         let mut payload_buf = vec![0; payload_size_in_bytes as usize];
                         match self.fp.read_exact(&mut payload_buf[..]) {
                             Ok(()) => match deserialize(&payload_buf) {
                                 Ok(event) => {
-                                    fslock.receiver_idx = fslock.receiver_idx.map(|x| x + 1);
-                                    fslock.writes_to_read -= 1;
                                     fslock.disk_writes_to_read -= 1;
                                     return Some(event);
                                 }
@@ -185,7 +166,6 @@ where
                 }
             }
         }
-        None
     }
 
     /// An iterator over messages on a receiver, this iterator will block

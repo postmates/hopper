@@ -3,16 +3,21 @@ mod integration {
     extern crate quickcheck;
     extern crate tempdir;
 
-    use self::hopper::channel_with_max_bytes;
+    use self::hopper::channel_with_explicit_capacity;
     use std::thread;
     use self::quickcheck::{QuickCheck, TestResult};
     use std::time;
 
     #[test]
     fn large_sequence_comes_back_exactly() {
+        let in_memory_limit = 1024 * ::std::mem::size_of::<usize>();
         let dir = tempdir::TempDir::new("hopper").unwrap();
-        let (mut snd, mut rcv) =
-            channel_with_max_bytes("zero_item_round_trip", dir.path(), 1_048_576).unwrap();
+        let (mut snd, mut rcv) = channel_with_explicit_capacity(
+            "zero_item_round_trip",
+            dir.path(),
+            in_memory_limit,
+            1_048_576,
+        ).unwrap();
 
         assert_eq!(None, rcv.iter().next());
 
@@ -30,7 +35,6 @@ mod integration {
         assert_eq!(count, max);
     }
 
-
     #[test]
     fn qc_concurrent_snd_and_rcv_round_trip() {
         fn snd_rcv(cap: usize, max_thrs: usize, max_bytes: usize) -> TestResult {
@@ -39,9 +43,10 @@ mod integration {
             }
             let dir = tempdir::TempDir::new("hopper").unwrap();
             println!("CONCURRENT SND_RECV TESTDIR: {:?}", dir);
-            let (snd, mut rcv) = channel_with_max_bytes(
+            let (snd, mut rcv) = channel_with_explicit_capacity(
                 "concurrent_snd_and_rcv_small_max_bytes",
                 dir.path(),
+                cap * ::std::mem::size_of::<usize>(),
                 max_bytes,
             ).unwrap();
 
@@ -64,8 +69,10 @@ mod integration {
             // start all our sender threads and blast away
             for _ in 0..max_thrs {
                 let mut thr_snd = snd.clone();
-                joins.push(thread::spawn(move || for i in 0..cap {
-                    thr_snd.send(i);
+                joins.push(thread::spawn(move || {
+                    for i in 0..cap {
+                        thr_snd.send(i);
+                    }
                 }));
             }
 
@@ -90,9 +97,10 @@ mod integration {
         let max_bytes = 14;
         let dir = tempdir::TempDir::new("hopper").unwrap();
         println!("CONCURRENT SND_RECV TESTDIR: {:?}", dir);
-        let (snd, mut rcv) = channel_with_max_bytes(
+        let (snd, mut rcv) = channel_with_explicit_capacity(
             "concurrent_snd_and_rcv_small_max_bytes",
             dir.path(),
+            cap * ::std::mem::size_of::<usize>(),
             max_bytes,
         ).unwrap();
 
@@ -115,8 +123,10 @@ mod integration {
         // start all our sender threads and blast away
         for _ in 0..max_thrs {
             let mut thr_snd = snd.clone();
-            joins.push(thread::spawn(move || for i in 0..cap {
-                thr_snd.send(i);
+            joins.push(thread::spawn(move || {
+                for i in 0..cap {
+                    thr_snd.send(i);
+                }
             }));
         }
 

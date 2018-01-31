@@ -10,15 +10,14 @@ use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug)]
-/// The 'send' side of hopper, similar to
-/// [`std::sync::mpsc::Sender`](https://doc.rust-lang.org/std/sync/mpsc/struct.
-/// Sender.html).
+/// The 'send' side of hopper, similar to `std::sync::mpsc::Sender`.
 pub struct Sender<T> {
     name: String,
     root: PathBuf, // directory we store our queues in
     path: PathBuf, // active fp filename
     seq_num: usize,
-    max_bytes: usize,
+    in_memory_limit: usize,
+    max_disk_bytes: usize,
     fs_lock: private::FSLock<T>,
     resource_type: PhantomData<T>,
 }
@@ -32,7 +31,8 @@ where
         Sender::new(
             self.name.clone(),
             &self.root,
-            self.max_bytes,
+            self.in_memory_limit,
+            self.max_disk_bytes,
             Arc::clone(&self.fs_lock),
         ).expect("COULD NOT CLONE")
     }
@@ -46,7 +46,8 @@ where
     pub fn new<S>(
         name: S,
         data_dir: &Path,
-        max_bytes: usize,
+        in_memory_limit: usize,
+        max_disk_bytes: usize,
         fs_lock: private::FSLock<T>,
     ) -> Result<Sender<T>, super::Error>
     where
@@ -54,7 +55,7 @@ where
     {
         use std::sync::Arc;
         let init_fs_lock = Arc::clone(&fs_lock);
-        let mut syn = init_fs_lock.lock();
+        let mut syn = init_fs_lock.lock().unwrap();
         if !data_dir.is_dir() {
             return Err(super::Error::NoSuchDirectory);
         }
@@ -85,7 +86,8 @@ where
                     root: data_dir.to_path_buf(),
                     path: log,
                     seq_num: seq_num,
-                    max_bytes: max_bytes,
+                    in_memory_limit: in_memory_limit,
+                    max_disk_bytes: max_disk_bytes,
                     fs_lock: fs_lock,
                     resource_type: PhantomData,
                 })
@@ -100,16 +102,15 @@ where
     ///  [u8] payload
     ///
     pub fn send(&mut self, event: T) {
-        let mut syn = self.fs_lock.lock();
+        let mut syn = self.fs_lock.lock().unwrap();
         let fslock = &mut (*syn);
 
-        if fslock.sender_idx < fslock.in_memory_idx {
-            fslock.mem_buffer.push_back(event);
-        } else {
-            fslock.disk_buffer.push_back(event);
-            if fslock.disk_buffer.len() >= fslock.in_memory_idx {
-                let mut buf: Cursor<Vec<u8>> = Cursor::new(Vec::with_capacity(64));
-                while let Some(ev) = fslock.disk_buffer.pop_front() {
+        fslock.mem_buffer.push_back(event);
+        if fslock.mem_buffer.len() >= self.in_memory_limit {
+            let mut buf: Cursor<Vec<u8>> = Cursor::new(Vec::with_capacity(64));
+            let mut wrote = false;
+            while fslock.mem_buffer.len().saturating_sub(self.in_memory_limit) > 0 {
+                if let Some(ev) = fslock.mem_buffer.pop_front() {
                     buf.seek(SeekFrom::Start(0)).unwrap();
                     let payload_len: u64 = serialized_size(&ev);
                     buf.write_u64::<BigEndian>(payload_len)
@@ -120,7 +121,8 @@ where
                     // to decide it has hit the end of its log file--and create
                     // a new log file.
                     let bytes_written = fslock.bytes_written + buf.get_ref().len();
-                    if (bytes_written > self.max_bytes) || (self.seq_num != fslock.sender_seq_num)
+                    if (bytes_written > self.max_disk_bytes)
+                        || (self.seq_num != fslock.sender_seq_num)
                         || fslock.sender_fp.is_none()
                     {
                         // Once we've gone over the write limit for our current
@@ -170,22 +172,17 @@ where
                             Err(e) => panic!("Write error: {}", e),
                         }
                         fslock.disk_writes_to_read += 1;
+                        wrote = true;
                     }
                 }
-                assert!(fslock.sender_fp.is_some());
-                if let Some(ref mut fp) = fslock.sender_fp {
+            }
+            assert!(fslock.sender_fp.is_some());
+            if let Some(ref mut fp) = fslock.sender_fp {
+                if wrote {
                     fp.flush().expect("unable to flush");
                 }
             }
         }
-        fslock.writes_to_read += 1;
-        if (fslock.sender_captured_recv_id != fslock.receiver_read_id)
-            || fslock.write_bound.is_none()
-        {
-            fslock.sender_captured_recv_id = fslock.receiver_read_id;
-            fslock.write_bound = Some(fslock.sender_idx);
-        }
-        fslock.sender_idx += 1;
     }
 
     /// Return the sender's name

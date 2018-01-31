@@ -81,7 +81,6 @@
 //! integrity. We are open to improvements in this area.
 extern crate bincode;
 extern crate byteorder;
-extern crate parking_lot;
 extern crate serde;
 
 mod receiver;
@@ -96,7 +95,6 @@ use std::fs;
 use std::mem;
 use std::path::Path;
 use std::sync;
-use parking_lot::Mutex;
 
 /// Defines the errors that hopper will bubble up
 ///
@@ -133,7 +131,7 @@ pub fn channel<T>(name: &str, data_dir: &Path) -> Result<(Sender<T>, Receiver<T>
 where
     T: Serialize + DeserializeOwned,
 {
-    channel_with_max_bytes(name, data_dir, 1_048_576 * 100)
+    channel_with_explicit_capacity(name, data_dir, 1_048_576, 1_048_576 * 100)
 }
 
 /// Create a (Sender, Reciever) pair in a like fashion to
@@ -143,12 +141,13 @@ where
 /// queue files are stored in `data_dir`. The Sender is clonable.
 ///
 /// This function gives control to the user over the maximum size of hopper's
-/// queue files as `max_bytes`, though not the total disk allocation that may be
-/// made.
-pub fn channel_with_max_bytes<T>(
+/// queue files as `max_disk_bytes`, though not the total disk allocation that
+/// may be made. Hopper will only be allowed to buffer 2*`max_memory_bytes`.
+pub fn channel_with_explicit_capacity<T>(
     name: &str,
     data_dir: &Path,
-    max_bytes: usize,
+    max_memory_bytes: usize,
+    max_disk_bytes: usize,
 ) -> Result<(Sender<T>, Receiver<T>), Error>
 where
     T: Serialize + DeserializeOwned,
@@ -161,17 +160,18 @@ where
     if !root.is_dir() {
         fs::create_dir_all(root).expect("could not create directory");
     }
-    let cap: usize = 1024;
     let sz = mem::size_of::<T>();
-    let max_bytes = if max_bytes < sz { sz } else { max_bytes };
-    let fs_lock = sync::Arc::new(Mutex::new(private::FsSync::new(cap)));
-    let sender = try!(Sender::new(
+    let max_disk_bytes = ::std::cmp::min(max_disk_bytes, sz);
+    let in_memory_limit: usize = max_memory_bytes / sz;
+    let fs_lock = sync::Arc::new(sync::Mutex::new(private::FsSync::new(in_memory_limit)));
+    let sender = Sender::new(
         name,
         &snd_root,
-        max_bytes,
-        Arc::clone(&fs_lock)
-    ));
-    let receiver = try!(Receiver::new(&rcv_root, fs_lock));
+        in_memory_limit,
+        max_disk_bytes,
+        Arc::clone(&fs_lock),
+    )?;
+    let receiver = Receiver::new(&rcv_root, in_memory_limit, fs_lock)?;
     Ok((sender, receiver))
 }
 
@@ -181,7 +181,7 @@ mod test {
     extern crate tempdir;
 
     use self::quickcheck::{QuickCheck, TestResult};
-    use super::{channel, channel_with_max_bytes};
+    use super::{channel, channel_with_explicit_capacity};
     use std::thread;
 
     #[test]
@@ -271,11 +271,14 @@ mod test {
 
     #[test]
     fn round_trip() {
-        fn rnd_trip(max_bytes: usize, evs: Vec<Vec<u32>>) -> TestResult {
+        fn rnd_trip(in_memory_limit: usize, max_bytes: usize, evs: Vec<Vec<u32>>) -> TestResult {
             let dir = tempdir::TempDir::new("hopper").unwrap();
-            let (mut snd, mut rcv) =
-                channel_with_max_bytes("round_trip_order_preserved", dir.path(), max_bytes)
-                    .unwrap();
+            let (mut snd, mut rcv) = channel_with_explicit_capacity(
+                "round_trip_order_preserved",
+                dir.path(),
+                in_memory_limit,
+                max_bytes,
+            ).unwrap();
 
             for ev in evs.clone() {
                 snd.send(ev);
@@ -289,17 +292,21 @@ mod test {
         QuickCheck::new()
             .tests(100)
             .max_tests(1000)
-            .quickcheck(rnd_trip as fn(usize, Vec<Vec<u32>>) -> TestResult);
+            .quickcheck(rnd_trip as fn(usize, usize, Vec<Vec<u32>>) -> TestResult);
     }
 
     #[test]
     fn round_trip_small_max_bytes() {
         fn rnd_trip(evs: Vec<Vec<u32>>) -> TestResult {
-            println!("START {:?}", evs);
+            let in_memory_limit: usize = 1024 * ::std::mem::size_of::<u32>();
             let max_bytes: usize = 128;
             let dir = tempdir::TempDir::new("hopper").unwrap();
-            let (mut snd, mut rcv) =
-                channel_with_max_bytes("small_max_bytes", dir.path(), max_bytes).unwrap();
+            let (mut snd, mut rcv) = channel_with_explicit_capacity(
+                "small_max_bytes",
+                dir.path(),
+                in_memory_limit,
+                max_bytes,
+            ).unwrap();
 
             for ev in evs.clone() {
                 snd.send(ev);
@@ -307,7 +314,6 @@ mod test {
 
             let mut total = evs.len();
             for ev in evs {
-                println!("REMAINING: {}", total);
                 assert_eq!(Some(ev), rcv.iter().next());
                 total -= 1;
             }
@@ -321,12 +327,13 @@ mod test {
 
     #[test]
     fn concurrent_snd_and_rcv_round_trip() {
+        let in_memory_limit = 1024 * ::std::mem::size_of::<usize>();
         let max_bytes: usize = 512;
         let dir = tempdir::TempDir::new("hopper").unwrap();
-        println!("CONCURRENT SND_RECV TESTDIR: {:?}", dir);
-        let (snd, mut rcv) = channel_with_max_bytes(
+        let (snd, mut rcv) = channel_with_explicit_capacity(
             "concurrent_snd_and_rcv_small_max_bytes",
             dir.path(),
+            in_memory_limit,
             max_bytes,
         ).unwrap();
         let max_thrs = 32;
@@ -377,12 +384,14 @@ mod test {
     #[test]
     fn qc_concurrent_snd_and_rcv_round_trip() {
         fn snd_rcv(evs: Vec<Vec<u32>>) -> TestResult {
+            let in_memory_limit = 1024 * ::std::mem::size_of::<usize>();
             let max_bytes: usize = 512;
             let dir = tempdir::TempDir::new("hopper").unwrap();
             println!("CONCURRENT SND_RECV TESTDIR: {:?}", dir);
-            let (snd, mut rcv) = channel_with_max_bytes(
+            let (snd, mut rcv) = channel_with_explicit_capacity(
                 "concurrent_snd_and_rcv_small_max_bytes",
                 dir.path(),
+                in_memory_limit,
                 max_bytes,
             ).unwrap();
 

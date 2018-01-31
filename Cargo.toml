@@ -6,7 +6,7 @@ license = "MIT"
 name = "hopper"
 readme = "README.md"
 repository = "https://github.com/postmates/hopper"
-version = "0.3.5-pre"
+version = "0.4.0-pre"
 
 [dev-dependencies]
 quickcheck = "0.6"
@@ -15,5 +15,4 @@ tempdir = "0.3"
 [dependencies]
 bincode = "0.9"
 byteorder = "1.2"
-parking_lot = "0.5"
 serde = "1.0"
