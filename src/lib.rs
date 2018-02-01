@@ -312,10 +312,8 @@ mod test {
                 snd.send(ev);
             }
 
-            let mut total = evs.len();
             for ev in evs {
                 assert_eq!(Some(ev), rcv.iter().next());
-                total -= 1;
             }
             TestResult::passed()
         }

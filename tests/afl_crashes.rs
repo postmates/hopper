@@ -12,7 +12,7 @@ mod integration {
 
     // TODO cope with 0 bytes issue
 
-    // #[test] // TODO re-enable, think issue is explicit capacity check...
+    #[test]
     fn test_run_afl_crashes() {
         let mut resource = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         resource.push("resources/afl_crashes.txt");
