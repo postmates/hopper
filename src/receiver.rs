@@ -17,6 +17,7 @@ pub struct Receiver<T> {
     fs_lock: private::FSLock<T>,
     resource_type: PhantomData<T>,
     in_memory_limit: usize,
+    disk_writes_to_read: usize,
 }
 
 impl<T> Receiver<T>
@@ -79,11 +80,81 @@ where
             resource_type: PhantomData,
             in_memory_limit: in_memory_limit,
             fs_lock: fs_lock,
+            disk_writes_to_read: 0,
         })
     }
 
+    // This function is _only_ called when there's disk writes to be read. If a
+    // disk read happens and no `T` is returned this is an unrecoverable error.
+    fn read_disk_value(&mut self) -> Result<T, ()> {
+        loop {
+            match self.fp.read_u64::<BigEndian>() {
+                Ok(payload_size_in_bytes) => {
+                    let mut payload_buf = vec![0; payload_size_in_bytes as usize];
+                    match self.fp.read_exact(&mut payload_buf[..]) {
+                        Ok(()) => match deserialize(&payload_buf) {
+                            Ok(event) => {
+                                self.disk_writes_to_read -= 1;
+                                return Ok(event);
+                            }
+                            Err(e) => panic!("Failed decoding. Skipping {:?}", e),
+                        },
+                        Err(e) => {
+                            panic!(
+                                "Error, on-disk payload of advertised size not available! \
+                                 Recv failed with error {:?}",
+                                e
+                            );
+                        }
+                    }
+                }
+                Err(e) => {
+                    match e.kind() {
+                        ErrorKind::UnexpectedEof => {
+                            // Okay, we're pretty sure that no one snuck data in
+                            // on us. We check the metadata condition of the
+                            // file and, if we find it read-only, switch on over
+                            // to a new log file.
+                            let metadata = self.fp
+                                .get_ref()
+                                .metadata()
+                                .expect("could not get metadata at UnexpectedEof");
+                            if metadata.permissions().readonly() {
+                                // TODO all these unwraps are a silent death
+                                let seq_num = fs::read_dir(&self.root)
+                                    .unwrap()
+                                    .map(|de| {
+                                        de.unwrap()
+                                            .path()
+                                            .file_name()
+                                            .unwrap()
+                                            .to_str()
+                                            .unwrap()
+                                            .parse::<usize>()
+                                            .unwrap()
+                                    })
+                                    .min()
+                                    .unwrap();
+                                let old_log = self.root.join(format!("{}", seq_num));
+                                fs::remove_file(old_log).expect("could not remove log");
+                                let lg = self.root.join(format!("{}", seq_num.wrapping_add(1)));
+                                match fs::OpenOptions::new().read(true).open(&lg) {
+                                    Ok(fp) => {
+                                        self.fp = BufReader::new(fp);
+                                        continue;
+                                    }
+                                    Err(_n) => return Err(()),
+                                }
+                            }
+                        }
+                        _ => return Err(()),
+                    }
+                }
+            }
+        }
+    }
+
     fn next_value(&mut self) -> Option<T> {
-        let mut syn = self.fs_lock.lock().unwrap();
         // The receive loop
         //
         // The receiver works by regularly attempting to read a payload from its
@@ -94,76 +165,25 @@ where
         // this is a signal from the senders that the file is no longer being
         // written to. It's safe for the Receiver to declare the log done by
         // deleting it and moving on to the next file.
-        let fslock = &mut (*syn);
-        if fslock.disk_writes_to_read == 0 {
-            fslock.mem_buffer.pop_front()
-        } else {
-            loop {
-                match self.fp.read_u64::<BigEndian>() {
-                    Ok(payload_size_in_bytes) => {
-                        let mut payload_buf = vec![0; payload_size_in_bytes as usize];
-                        match self.fp.read_exact(&mut payload_buf[..]) {
-                            Ok(()) => match deserialize(&payload_buf) {
-                                Ok(event) => {
-                                    fslock.disk_writes_to_read -= 1;
-                                    return Some(event);
-                                }
-                                Err(e) => panic!("Failed decoding. Skipping {:?}", e),
-                            },
-                            Err(e) => {
-                                panic!(
-                                    "Error, on-disk payload of advertised size not available! \
-                                     Recv failed with error {:?}",
-                                    e
-                                );
-                            }
+        loop {
+            if self.disk_writes_to_read == 0 {
+                let mut syn = self.fs_lock.lock().unwrap();
+                let fslock = &mut (*syn);
+                if let Some(placement) = fslock.mem_buffer.pop_front() {
+                    match placement {
+                        private::Placement::Memory(ev) => {
+                            return Some(ev);
+                        }
+                        private::Placement::Disk(sz) => {
+                            self.disk_writes_to_read = sz;
+                            continue;
                         }
                     }
-                    Err(e) => {
-                        match e.kind() {
-                            ErrorKind::UnexpectedEof => {
-                                // Okay, we're pretty sure that no one snuck data in
-                                // on us. We check the metadata condition of the
-                                // file and, if we find it read-only, switch on over
-                                // to a new log file.
-                                let metadata = self.fp
-                                    .get_ref()
-                                    .metadata()
-                                    .expect("could not get metadata at UnexpectedEof");
-                                if metadata.permissions().readonly() {
-                                    // TODO all these unwraps are a silent death
-                                    let seq_num = fs::read_dir(&self.root)
-                                        .unwrap()
-                                        .map(|de| {
-                                            de.unwrap()
-                                                .path()
-                                                .file_name()
-                                                .unwrap()
-                                                .to_str()
-                                                .unwrap()
-                                                .parse::<usize>()
-                                                .unwrap()
-                                        })
-                                        .min()
-                                        .unwrap();
-                                    let old_log = self.root.join(format!("{}", seq_num));
-                                    fs::remove_file(old_log).expect("could not remove log");
-                                    let lg = self.root.join(format!("{}", seq_num.wrapping_add(1)));
-                                    match fs::OpenOptions::new().read(true).open(&lg) {
-                                        Ok(fp) => {
-                                            self.fp = BufReader::new(fp);
-                                            continue;
-                                        }
-                                        Err(e) => panic!("[Receiver] could not open {:?}", e),
-                                    }
-                                }
-                            }
-                            _ => {
-                                panic!("unable to cope");
-                            }
-                        }
-                    }
+                } else {
+                    return None;
                 }
+            } else {
+                return Some(self.read_disk_value().unwrap());
             }
         }
     }

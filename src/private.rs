@@ -3,10 +3,15 @@ use std::sync;
 use std::io::BufWriter;
 use std::fs;
 
+#[derive(Debug)]
+pub enum Placement<T> {
+    Memory(T),
+    Disk(usize),
+}
+
 #[derive(Default, Debug)]
 pub struct FsSync<T> {
-    pub disk_writes_to_read: usize, // shared
-    pub mem_buffer: VecDeque<T>,    // shared
+    pub mem_buffer: VecDeque<Placement<T>>, // shared
 
     pub sender_fp: Option<BufWriter<fs::File>>, // sender only
     pub bytes_written: usize,                   // sender only
@@ -19,7 +24,6 @@ impl<T> FsSync<T> {
             sender_fp: None,
 
             bytes_written: 0,
-            disk_writes_to_read: 0,
             sender_seq_num: 0,
             mem_buffer: VecDeque::with_capacity(in_memory_limit),
         }
