@@ -81,6 +81,7 @@
 //! integrity. We are open to improvements in this area.
 extern crate bincode;
 extern crate byteorder;
+extern crate flate2;
 extern crate serde;
 
 mod receiver;

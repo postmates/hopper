@@ -1,4 +1,4 @@
-use bincode::deserialize;
+use bincode::{deserialize_from, Infinite};
 use private;
 use byteorder::{BigEndian, ReadBytesExt};
 use serde::de::DeserializeOwned;
@@ -7,6 +7,7 @@ use std::io::{BufReader, ErrorKind, Read, Seek, SeekFrom};
 use std::iter::IntoIterator;
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
+use flate2::read::DeflateDecoder;
 
 #[derive(Debug)]
 /// The 'receive' side of hopper, similar to
@@ -92,13 +93,16 @@ where
                 Ok(payload_size_in_bytes) => {
                     let mut payload_buf = vec![0; payload_size_in_bytes as usize];
                     match self.fp.read_exact(&mut payload_buf[..]) {
-                        Ok(()) => match deserialize(&payload_buf) {
-                            Ok(event) => {
-                                self.disk_writes_to_read -= 1;
-                                return Ok(event);
+                        Ok(()) => {
+                            let mut dec = DeflateDecoder::new(&payload_buf[..]);
+                            match deserialize_from(&mut dec, Infinite) {
+                                Ok(event) => {
+                                    self.disk_writes_to_read -= 1;
+                                    return Ok(event);
+                                }
+                                Err(e) => panic!("Failed decoding. Skipping {:?}", e),
                             }
-                            Err(e) => panic!("Failed decoding. Skipping {:?}", e),
-                        },
+                        }
                         Err(e) => {
                             panic!(
                                 "Error, on-disk payload of advertised size not available! \
