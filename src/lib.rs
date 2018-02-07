@@ -1,6 +1,5 @@
 #![deny(missing_docs, missing_debug_implementations, missing_copy_implementations,
-        trivial_numeric_casts, unsafe_code, unstable_features, unused_import_braces,
-        unused_qualifications)]
+        trivial_numeric_casts, unstable_features, unused_import_braces, unused_qualifications)]
 //! hopper - an unbounded mpsc with bounded memory
 //!
 //! This module provides a version of the rust standard
@@ -87,6 +86,7 @@ extern crate serde;
 mod receiver;
 mod sender;
 mod private;
+mod deque;
 
 pub use self::receiver::Receiver;
 pub use self::sender::Sender;
