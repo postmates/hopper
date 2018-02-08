@@ -1,33 +1,27 @@
 // Indebted to "The Art of Multiprocessor Programming"
 
-use std::sync::{Condvar, Mutex, MutexGuard};
+use std::sync::{Condvar, Mutex};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::ptr;
+use std::mem;
 
 unsafe impl<T: ::std::fmt::Debug> Send for Queue<T> {}
 unsafe impl<T: ::std::fmt::Debug> Sync for Queue<T> {}
-
-#[derive(Debug)]
-struct Node<T>
-where
-    T: ::std::fmt::Debug,
-{
-    elem: Option<T>,
-    next: *mut Node<T>,
-}
 
 struct InnerQueue<T>
 where
     T: ::std::fmt::Debug,
 {
-    head: *mut Node<T>,
-    tail: *mut Node<T>,
     capacity: usize,
+    data: *mut Option<T>,
     size: AtomicUsize,
-    enq_lock: Mutex<()>,
-    deq_lock: Mutex<()>,
+    enq_lock: Mutex<isize>,
+    deq_lock: Mutex<isize>,
     not_empty: Condvar,
-    not_full: Condvar,
+}
+
+#[derive(Debug)]
+pub enum Error {
+    WouldBlock,
 }
 
 impl<T> InnerQueue<T>
@@ -35,81 +29,68 @@ where
     T: ::std::fmt::Debug,
 {
     pub fn new() -> InnerQueue<T> {
-        let head = Box::into_raw(Box::new(Node {
-            elem: None,
-            next: ptr::null_mut(),
-        }));
+        InnerQueue::with_capacity(1024)
+    }
+
+    pub fn with_capacity(capacity: usize) -> InnerQueue<T> {
+        let mut data: Vec<Option<T>> = Vec::with_capacity(capacity);
+        for _ in 0..capacity {
+            data.push(None);
+        }
         InnerQueue {
-            head: head,
-            tail: head,
-            capacity: 1024,
-            size: AtomicUsize::new(1),
-            enq_lock: Mutex::new(()),
-            deq_lock: Mutex::new(()),
+            capacity: capacity,
+            data: (&mut data).as_mut_ptr(),
+            size: AtomicUsize::new(0),
+            enq_lock: Mutex::new(0),
+            deq_lock: Mutex::new(0),
             not_empty: Condvar::new(),
-            not_full: Condvar::new(),
         }
     }
 
-    pub fn enq(&mut self, elem: T) {
-        // println!("ENQ: {:?}", elem);
+    pub fn enq(&mut self, elem: T) -> Result<(), Error> {
         let mut must_wake_dequeuers = false;
-        let mut guard: MutexGuard<()> = self.enq_lock.lock().unwrap();
-        while self.size.load(Ordering::SeqCst) == self.capacity {
-            guard = self.not_empty.wait(guard).unwrap();
-        }
-        let new_tail = Box::into_raw(Box::new(Node {
-            elem: Some(elem),
-            next: ptr::null_mut(),
-        }));
-        unsafe {
-            (*self.tail).next = new_tail;
-        }
-        self.tail = new_tail;
-        if self.size.fetch_add(1, Ordering::SeqCst) == 0 {
-            must_wake_dequeuers = true;
+        let mut guard = self.enq_lock.lock().expect("enq guard poisoned");
+        let ptr: &mut Option<T> = unsafe {
+            self.data
+                .offset(*guard)
+                .as_mut()
+                .expect("enq pointer is null")
+        };
+        if ptr.is_some() {
+            return Err(Error::WouldBlock);
+        } else {
+            assert!(mem::replace(ptr, Some(elem)).is_none());
+            *guard += 1;
+            *guard %= self.capacity as isize;
+            if self.size.fetch_add(1, Ordering::Relaxed) == 0 {
+                must_wake_dequeuers = true;
+            };
         }
         drop(guard);
-        println!("LET GO OF LOCK");
         if must_wake_dequeuers {
-            let _ = self.deq_lock.lock().unwrap();
+            let guard = self.deq_lock.lock().expect("deq guard poisoned");
             self.not_empty.notify_all();
+            drop(guard);
         }
+        return Ok(());
     }
 
-    pub fn deq(&mut self) -> Option<T> {
-        let mut must_wake_enqueuers = false;
-        let mut guard: MutexGuard<()> = self.deq_lock.lock().unwrap();
-        while self.size.load(Ordering::SeqCst) == 0 {
-            println!("OOPS SIZE IS ZERO");
+    pub fn deq(&mut self) -> T {
+        let mut guard = self.deq_lock.lock().expect("deq guard poisoned");
+        while self.size.load(Ordering::Relaxed) == 0 {
             guard = self.not_empty.wait(guard).unwrap();
         }
-        let head = self.head;
-        unsafe {
-            if (*head).next.is_null() {
-                self.head = Box::into_raw(Box::new(Node {
-                    elem: None,
-                    next: ptr::null_mut(),
-                }));
-            } else {
-                self.head = (*head).next;
+        let ptr: &mut Option<T> =
+            unsafe { self.data.offset(*guard).as_mut().expect("deq pointer null") };
+        match mem::replace(ptr, None) {
+            Some(elem) => {
+                *guard += 1;
+                *guard %= self.capacity as isize;
+                self.size.fetch_sub(1, Ordering::Relaxed);
+                return elem;
             }
+            None => unreachable!(),
         }
-        unsafe {
-            println!("OLD HEAD: {:?}\nHEAD:    {:?}", *head, *self.head);
-        }
-        let node: Box<Node<T>> = unsafe { Box::from_raw(head) };
-        let result = node.elem;
-        if self.size.fetch_sub(1, Ordering::SeqCst) == self.capacity {
-            must_wake_enqueuers = true;
-        }
-        drop(guard);
-        if must_wake_enqueuers {
-            let _ = self.enq_lock.lock().unwrap();
-            self.not_full.notify_all();
-        }
-        println!("DEQ: {:?}", result);
-        return result;
     }
 }
 
@@ -135,16 +116,20 @@ impl<T> Queue<T>
 where
     T: ::std::fmt::Debug,
 {
-    pub fn new() -> Queue<T> {
-        let inner = Box::into_raw(Box::new(InnerQueue::new()));
+    pub fn with_capacity(capacity: usize) -> Queue<T> {
+        let inner = Box::into_raw(Box::new(InnerQueue::with_capacity(capacity)));
         Queue { inner: inner }
     }
 
-    pub fn enq(&mut self, elem: T) {
+    pub fn new() -> Queue<T> {
+        Queue::with_capacity(1024)
+    }
+
+    pub fn enq(&mut self, elem: T) -> Result<(), Error> {
         unsafe { (*self.inner).enq(elem) }
     }
 
-    pub fn deq(&mut self) -> Option<T> {
+    pub fn deq(&mut self) -> T {
         unsafe { (*self.inner).deq() }
     }
 }
@@ -156,51 +141,6 @@ mod test {
     use self::quickcheck::{Arbitrary, Gen, QuickCheck, TestResult};
     use std::thread;
     use super::*;
-
-    #[test]
-    fn simple() {
-        let total_senders = 2;
-        let mut vals = vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
-
-        let mut sut: Queue<u64> = Queue::new();
-
-        let mut snd_jh = Vec::new();
-        let snd_vals = vals.clone();
-        for chunk in snd_vals.chunks(total_senders) {
-            println!("CHUNK: {:?}", chunk);
-            let mut snd_q = sut.clone();
-            let chunk: Vec<u64> = chunk.to_vec();
-            snd_jh.push(thread::spawn(move || {
-                for ev in chunk {
-                    snd_q.enq(ev)
-                }
-            }))
-        }
-
-        let expected_total_vals = vals.len();
-        let mut rcv_vals: Vec<u64> = thread::spawn(move || {
-            let mut collected: Vec<u64> = Vec::new();
-            while collected.len() != expected_total_vals {
-                match sut.deq() {
-                    Some(v) => {
-                        collected.push(v);
-                    }
-                    None => continue,
-                }
-            }
-            collected
-        }).join()
-            .unwrap();
-
-        for jh in snd_jh {
-            jh.join().unwrap();
-        }
-
-        rcv_vals.sort();
-        vals.sort();
-
-        assert_eq!(rcv_vals, vals);
-    }
 
     #[derive(Clone, Debug)]
     enum Action {
@@ -233,11 +173,14 @@ mod test {
                 match action {
                     Action::Enq(v) => {
                         model.push_back(v);
-                        sut.enq(v);
+                        assert!(sut.enq(v).is_ok());
                     }
-                    Action::Deq => {
-                        assert_eq!(model.pop_front(), sut.deq());
-                    }
+                    Action::Deq => match model.pop_front() {
+                        Some(v) => {
+                            assert_eq!(v, sut.deq());
+                        }
+                        None => continue,
+                    },
                 }
             }
             TestResult::passed()
@@ -247,13 +190,16 @@ mod test {
 
     #[test]
     fn model_check() {
-        fn inner(total_senders: usize, mut vals: Vec<u64>) -> TestResult {
-            println!("TOTAL_SENDERS: {}\nVALS: {:?}", total_senders, vals);
-            if total_senders == 0 {
+        fn inner(total_senders: usize, capacity: usize, vals: Vec<u64>) -> TestResult {
+            println!(
+                "MODEL CHECK\n    SENDERS: {}\n    CAPACITY: {}\n    VALUES: {:?}",
+                total_senders, capacity, vals
+            );
+            if total_senders == 0 || capacity == 0 {
                 return TestResult::discard();
             }
 
-            let mut sut: Queue<u64> = Queue::new();
+            let mut sut: Queue<u64> = Queue::with_capacity(capacity);
 
             let mut snd_jh = Vec::new();
             let snd_vals = vals.clone();
@@ -261,37 +207,38 @@ mod test {
                 let mut snd_q = sut.clone();
                 let chunk: Vec<u64> = chunk.to_vec();
                 snd_jh.push(thread::spawn(move || {
+                    let mut queued: Vec<u64> = Vec::new();
                     for ev in chunk {
-                        snd_q.enq(ev)
+                        if snd_q.enq(ev).is_ok() {
+                            queued.push(ev);
+                        }
                     }
+                    queued
                 }))
             }
 
             let expected_total_vals = vals.len();
-            let mut rcv_vals: Vec<u64> = thread::spawn(move || {
+            let rcv_jh = thread::spawn(move || {
                 let mut collected: Vec<u64> = Vec::new();
-                while collected.len() != expected_total_vals {
-                    match sut.deq() {
-                        Some(v) => {
-                            collected.push(v);
-                        }
-                        None => continue,
-                    }
+                while collected.len() < expected_total_vals {
+                    let v = sut.deq();
+                    collected.push(v);
                 }
                 collected
-            }).join()
-                .unwrap();
+            });
 
+            let mut snd_vals: Vec<u64> = Vec::new();
             for jh in snd_jh {
-                jh.join().unwrap();
+                snd_vals.append(&mut jh.join().expect("snd join failed"));
             }
+            let mut rcv_vals: Vec<u64> = rcv_jh.join().expect("rcv join failed");
 
             rcv_vals.sort();
-            vals.sort();
+            snd_vals.sort();
 
-            assert_eq!(rcv_vals, vals);
+            assert_eq!(rcv_vals, snd_vals);
             TestResult::passed()
         }
-        QuickCheck::new().quickcheck(inner as fn(usize, Vec<u64>) -> TestResult);
+        QuickCheck::new().quickcheck(inner as fn(usize, usize, Vec<u64>) -> TestResult);
     }
 }
