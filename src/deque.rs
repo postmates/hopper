@@ -1,8 +1,7 @@
 // Indebted to "The Art of Multiprocessor Programming"
-
 use std::sync::{Condvar, Mutex};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::mem;
+use std::{mem, ptr};
 
 unsafe impl<T: ::std::fmt::Debug> Send for Queue<T> {}
 unsafe impl<T: ::std::fmt::Debug> Sync for Queue<T> {}
@@ -12,7 +11,7 @@ where
     T: ::std::fmt::Debug,
 {
     capacity: usize,
-    data: *mut Option<T>,
+    data: *mut (*const T),
     size: AtomicUsize,
     enq_lock: Mutex<isize>,
     deq_lock: Mutex<isize>,
@@ -21,25 +20,23 @@ where
 
 #[derive(Debug)]
 pub enum Error {
-    WouldBlock,
+    Full,
 }
 
 impl<T> InnerQueue<T>
 where
     T: ::std::fmt::Debug,
 {
-    pub fn new() -> InnerQueue<T> {
-        InnerQueue::with_capacity(1024)
-    }
-
     pub fn with_capacity(capacity: usize) -> InnerQueue<T> {
-        let mut data: Vec<Option<T>> = Vec::with_capacity(capacity);
+        let mut data: Vec<*const T> = Vec::with_capacity(capacity);
         for _ in 0..capacity {
-            data.push(None);
+            data.push(ptr::null());
         }
+        let raw_data = (&mut data).as_mut_ptr();
+        mem::forget(data);
         InnerQueue {
             capacity: capacity,
-            data: (&mut data).as_mut_ptr(),
+            data: raw_data,
             size: AtomicUsize::new(0),
             enq_lock: Mutex::new(0),
             deq_lock: Mutex::new(0),
@@ -47,22 +44,24 @@ where
         }
     }
 
-    pub fn enq(&mut self, elem: T) -> Result<(), Error> {
+    pub fn capacity(&self) -> usize {
+        self.capacity
+    }
+
+    pub fn size(&self) -> usize {
+        self.size.load(Ordering::Relaxed)
+    }
+
+    pub unsafe fn enq(&mut self, elem: T) -> Result<(), Error> {
         let mut must_wake_dequeuers = false;
         let mut guard = self.enq_lock.lock().expect("enq guard poisoned");
-        let ptr: &mut Option<T> = unsafe {
-            self.data
-                .offset(*guard)
-                .as_mut()
-                .expect("enq pointer is null")
-        };
-        if ptr.is_some() {
-            return Err(Error::WouldBlock);
+        if !(*self.data.offset(*guard)).is_null() {
+            return Err(Error::Full);
         } else {
-            assert!(mem::replace(ptr, Some(elem)).is_none());
+            *self.data.offset(*guard) = Box::into_raw(Box::new(elem));
             *guard += 1;
             *guard %= self.capacity as isize;
-            if self.size.fetch_add(1, Ordering::Relaxed) == 0 {
+            if self.size.fetch_add(1, Ordering::Release) == 0 {
                 must_wake_dequeuers = true;
             };
         }
@@ -75,22 +74,17 @@ where
         return Ok(());
     }
 
-    pub fn deq(&mut self) -> T {
+    pub unsafe fn deq(&mut self) -> T {
         let mut guard = self.deq_lock.lock().expect("deq guard poisoned");
-        while self.size.load(Ordering::Relaxed) == 0 {
-            guard = self.not_empty.wait(guard).unwrap();
+        while self.size.load(Ordering::Acquire) == 0 {
+            guard = self.not_empty.wait(guard).expect("oops could not wait deq");
         }
-        let ptr: &mut Option<T> =
-            unsafe { self.data.offset(*guard).as_mut().expect("deq pointer null") };
-        match mem::replace(ptr, None) {
-            Some(elem) => {
-                *guard += 1;
-                *guard %= self.capacity as isize;
-                self.size.fetch_sub(1, Ordering::Relaxed);
-                return elem;
-            }
-            None => unreachable!(),
-        }
+        let elem: T = ptr::read(*self.data.offset(*guard));
+        *self.data.offset(*guard) = ptr::null_mut();
+        *guard += 1;
+        *guard %= self.capacity as isize;
+        self.size.fetch_sub(1, Ordering::Release);
+        return elem;
     }
 }
 
@@ -98,7 +92,6 @@ struct Queue<T>
 where
     T: ::std::fmt::Debug,
 {
-    // we need to use unsafe cell so that innerqueue has a fixed place in memory
     inner: *mut InnerQueue<T>,
 }
 
@@ -123,6 +116,14 @@ where
 
     pub fn new() -> Queue<T> {
         Queue::with_capacity(1024)
+    }
+
+    pub fn capacity(&self) -> usize {
+        unsafe { (*self.inner).capacity() }
+    }
+
+    pub fn size(&self) -> usize {
+        unsafe { (*self.inner).size() }
     }
 
     pub fn enq(&mut self, elem: T) -> Result<(), Error> {
@@ -191,26 +192,29 @@ mod test {
     #[test]
     fn model_check() {
         fn inner(total_senders: usize, capacity: usize, vals: Vec<u64>) -> TestResult {
-            println!(
-                "MODEL CHECK\n    SENDERS: {}\n    CAPACITY: {}\n    VALUES: {:?}",
-                total_senders, capacity, vals
-            );
-            if total_senders == 0 || capacity == 0 {
+            if total_senders == 0 || total_senders > 10 || capacity == 0 || vals.len() == 0
+                || (vals.len() < total_senders)
+            {
                 return TestResult::discard();
             }
 
             let mut sut: Queue<u64> = Queue::with_capacity(capacity);
 
+            let chunk_size = vals.len() / total_senders;
+
             let mut snd_jh = Vec::new();
             let snd_vals = vals.clone();
-            for chunk in snd_vals.chunks(total_senders) {
+            for chunk in snd_vals.chunks(chunk_size) {
                 let mut snd_q = sut.clone();
                 let chunk: Vec<u64> = chunk.to_vec();
                 snd_jh.push(thread::spawn(move || {
                     let mut queued: Vec<u64> = Vec::new();
                     for ev in chunk {
-                        if snd_q.enq(ev).is_ok() {
-                            queued.push(ev);
+                        loop {
+                            if snd_q.enq(ev).is_ok() {
+                                queued.push(ev);
+                                break;
+                            }
                         }
                     }
                     queued
