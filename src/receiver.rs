@@ -15,9 +15,8 @@ use flate2::read::DeflateDecoder;
 pub struct Receiver<T> {
     root: PathBuf,           // directory we store our queues in
     fp: BufReader<fs::File>, // active fp
-    fs_lock: private::FSLock<T>,
     resource_type: PhantomData<T>,
-    in_memory_limit: usize,
+    mem_buffer: private::Queue<T>,
     disk_writes_to_read: usize,
 }
 
@@ -28,10 +27,10 @@ where
     #[doc(hidden)]
     pub fn new(
         data_dir: &Path,
-        in_memory_limit: usize,
-        fs_lock: private::FSLock<T>,
+        mem_buffer: private::Queue<T>,
     ) -> Result<Receiver<T>, super::Error> {
-        let _ = fs_lock.lock();
+        let mut setup_mem_buffer = mem_buffer.clone(); // clone is cheeeeeap
+        let guard = setup_mem_buffer.lock_front();
         if !data_dir.is_dir() {
             return Err(super::Error::NoSuchDirectory);
         }
@@ -74,13 +73,12 @@ where
             .expect("RECEIVER could not open file");
         fp.seek(SeekFrom::End(0))
             .expect("could not get to end of file");
-
+        drop(guard);
         Ok(Receiver {
             root: data_dir.to_path_buf(),
             fp: BufReader::new(fp),
             resource_type: PhantomData,
-            in_memory_limit: in_memory_limit,
-            fs_lock: fs_lock,
+            mem_buffer: mem_buffer,
             disk_writes_to_read: 0,
         })
     }
@@ -171,20 +169,14 @@ where
         // deleting it and moving on to the next file.
         loop {
             if self.disk_writes_to_read == 0 {
-                let mut syn = self.fs_lock.lock().unwrap();
-                let fslock = &mut (*syn);
-                if let Some(placement) = fslock.mem_buffer.pop_front() {
-                    match placement {
-                        private::Placement::Memory(ev) => {
-                            return Some(ev);
-                        }
-                        private::Placement::Disk(sz) => {
-                            self.disk_writes_to_read = sz;
-                            continue;
-                        }
+                match self.mem_buffer.pop_front() {
+                    private::Placement::Memory(ev) => {
+                        return Some(ev);
                     }
-                } else {
-                    return None;
+                    private::Placement::Disk(sz) => {
+                        self.disk_writes_to_read = sz;
+                        continue;
+                    }
                 }
             } else {
                 return Some(self.read_disk_value().unwrap());

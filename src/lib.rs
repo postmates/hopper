@@ -95,7 +95,6 @@ use serde::de::DeserializeOwned;
 use std::fs;
 use std::mem;
 use std::path::Path;
-use std::sync;
 
 /// Defines the errors that hopper will bubble up
 ///
@@ -153,8 +152,6 @@ pub fn channel_with_explicit_capacity<T>(
 where
     T: Serialize + DeserializeOwned,
 {
-    use std::sync::Arc;
-
     let root = data_dir.join(name);
     let snd_root = root.clone();
     let rcv_root = root.clone();
@@ -164,15 +161,9 @@ where
     let sz = mem::size_of::<T>();
     let max_disk_bytes = ::std::cmp::min(max_disk_bytes, sz);
     let in_memory_limit: usize = max_memory_bytes / sz;
-    let fs_lock = sync::Arc::new(sync::Mutex::new(private::FsSync::new(in_memory_limit)));
-    let sender = Sender::new(
-        name,
-        &snd_root,
-        in_memory_limit,
-        max_disk_bytes,
-        Arc::clone(&fs_lock),
-    )?;
-    let receiver = Receiver::new(&rcv_root, in_memory_limit, fs_lock)?;
+    let q: private::Queue<T> = deque::Queue::with_capacity(in_memory_limit);
+    let sender = Sender::new(name, &snd_root, max_disk_bytes, q.clone())?;
+    let receiver = Receiver::new(&rcv_root, q)?;
     Ok((sender, receiver))
 }
 
