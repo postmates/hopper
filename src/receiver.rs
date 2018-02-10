@@ -29,7 +29,7 @@ where
         data_dir: &Path,
         mem_buffer: private::Queue<T>,
     ) -> Result<Receiver<T>, super::Error> {
-        let mut setup_mem_buffer = mem_buffer.clone(); // clone is cheeeeeap
+        let setup_mem_buffer = mem_buffer.clone(); // clone is cheeeeeap
         let guard = setup_mem_buffer.lock_front();
         if !data_dir.is_dir() {
             return Err(super::Error::NoSuchDirectory);

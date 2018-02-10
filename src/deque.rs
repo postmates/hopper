@@ -63,11 +63,11 @@ where
         self.size.load(Ordering::Relaxed)
     }
 
-    pub fn lock_back(&mut self) -> MutexGuard<BackGuardInner<S>> {
+    pub fn lock_back(&self) -> MutexGuard<BackGuardInner<S>> {
         self.back_lock.lock().expect("enq lock poisoned")
     }
 
-    pub fn lock_front(&mut self) -> MutexGuard<FrontGuardInner> {
+    pub fn lock_front(&self) -> MutexGuard<FrontGuardInner> {
         self.front_lock.lock().expect("deq lock poisoned")
     }
 
@@ -90,10 +90,7 @@ where
         return Ok(must_wake_dequeuers);
     }
 
-    pub unsafe fn pop_front_no_block(
-        &mut self,
-        guard: &mut MutexGuard<FrontGuardInner>,
-    ) -> Option<T> {
+    pub unsafe fn pop_front_no_block(&self, guard: &mut MutexGuard<FrontGuardInner>) -> Option<T> {
         if self.size.load(Ordering::Acquire) == 0 {
             return None;
         } else {
@@ -106,9 +103,16 @@ where
         }
     }
 
+    pub unsafe fn pop_back_no_block(
+        &self,
+        _guard: &mut MutexGuard<BackGuardInner<S>>,
+    ) -> Option<T> {
+        unimplemented!();
+    }
+
     /// WARNING do not call this if deq_lock has been locked by the same thread
     /// you WILL deadlock and have a bad time
-    pub unsafe fn pop_front(&mut self) -> T {
+    pub unsafe fn pop_front(&self) -> T {
         let mut guard = self.front_lock.lock().expect("deq lock poisoned");
         while self.size.load(Ordering::Acquire) == 0 {
             guard = self.not_empty.wait(guard).expect("oops could not wait deq");
@@ -122,7 +126,7 @@ where
     }
 
     pub unsafe fn push_front(
-        &mut self,
+        &self,
         _elem: T,
         _guard: &mut MutexGuard<FrontGuardInner>,
     ) -> Result<bool, Error<T>> {
@@ -156,11 +160,11 @@ impl<T, S: ::std::default::Default> Queue<T, S> {
         unsafe { (*self.inner).size() }
     }
 
-    pub fn lock_back(&mut self) -> MutexGuard<BackGuardInner<S>> {
+    pub fn lock_back(&self) -> MutexGuard<BackGuardInner<S>> {
         unsafe { (*self.inner).lock_back() }
     }
 
-    pub fn lock_front(&mut self) -> MutexGuard<FrontGuardInner> {
+    pub fn lock_front(&self) -> MutexGuard<FrontGuardInner> {
         unsafe { (*self.inner).lock_front() }
     }
 
@@ -173,29 +177,33 @@ impl<T, S: ::std::default::Default> Queue<T, S> {
     /// for calling notify_not_empty OR A DEADLOCK WILL HAPPEN. Thank you and
     /// god bless; you're welcome.
     pub fn push_back(
-        &mut self,
+        &self,
         elem: T,
         mut guard: &mut MutexGuard<BackGuardInner<S>>,
     ) -> Result<bool, Error<T>> {
         unsafe { (*self.inner).push_back(elem, &mut guard) }
     }
 
+    pub fn pop_back_no_block(&self, mut guard: &mut MutexGuard<BackGuardInner<S>>) -> Option<T> {
+        unsafe { (*self.inner).pop_back_no_block(&mut guard) }
+    }
+
     pub fn push_front(
-        &mut self,
+        &self,
         elem: T,
         mut guard: &mut MutexGuard<FrontGuardInner>,
     ) -> Result<bool, Error<T>> {
         unsafe { (*self.inner).push_front(elem, &mut guard) }
     }
 
-    pub fn notify_not_empty(&mut self, _guard: &MutexGuard<FrontGuardInner>) {
+    pub fn notify_not_empty(&self, _guard: &MutexGuard<FrontGuardInner>) {
         // guard is not used here but is required to verifiy that 1. a deadlock
         // situation has not happened and 2. we're not doing a notify without
         // holding the lock.
         unsafe { (*self.inner).not_empty.notify_all() }
     }
 
-    pub fn pop_front_no_block(&mut self, guard: &mut MutexGuard<FrontGuardInner>) -> Option<T> {
+    pub fn pop_front_no_block(&self, guard: &mut MutexGuard<FrontGuardInner>) -> Option<T> {
         unsafe { (*self.inner).pop_front_no_block(guard) }
     }
 
