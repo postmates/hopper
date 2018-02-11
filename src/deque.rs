@@ -1,12 +1,15 @@
 // Indebted to "The Art of Multiprocessor Programming"
 use std::sync::{Condvar, Mutex, MutexGuard};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::{mem, ptr};
+use std::{fmt, mem, ptr};
 
-unsafe impl<T, S> Send for Queue<T, S> {}
-unsafe impl<T, S> Sync for Queue<T, S> {}
+unsafe impl<T: fmt::Debug, S> Send for Queue<T, S> {}
+unsafe impl<T: fmt::Debug, S> Sync for Queue<T, S> {}
 
-struct InnerQueue<T, S> {
+struct InnerQueue<T, S>
+where
+    T: fmt::Debug,
+{
     capacity: usize,
     data: *mut (*const T),
     size: AtomicUsize,
@@ -33,6 +36,7 @@ pub struct BackGuardInner<S> {
 
 impl<T, S> InnerQueue<T, S>
 where
+    T: fmt::Debug,
     S: ::std::default::Default,
 {
     pub fn with_capacity(capacity: usize) -> InnerQueue<T, S> {
@@ -76,6 +80,13 @@ where
         elem: T,
         guard: &mut MutexGuard<BackGuardInner<S>>,
     ) -> Result<bool, Error<T>> {
+        println!(
+            "{:<4}PUSH_BACK[{:?}] |{:?}| {:?}",
+            "",
+            (*guard).offset,
+            self.data.offset((*guard).offset),
+            elem
+        );
         let mut must_wake_dequeuers = false;
         if !(*self.data.offset((*guard).offset)).is_null() {
             return Err(Error::Full(elem));
@@ -90,63 +101,69 @@ where
         return Ok(must_wake_dequeuers);
     }
 
-    pub unsafe fn pop_front_no_block(&self, guard: &mut MutexGuard<FrontGuardInner>) -> Option<T> {
+    pub unsafe fn pop_back_no_block(&self, guard: &mut MutexGuard<BackGuardInner<S>>) -> Option<T> {
+        println!(
+            "{:<4}POP_BACK_NO_BLOCK {:p}",
+            "",
+            self.data.offset((*guard).offset)
+        );
         if self.size.load(Ordering::Acquire) == 0 {
             return None;
         } else {
-            let elem: T = ptr::read(*self.data.offset((*guard).offset));
+            println!("{:<6}OFFSET {:?}", "", (*guard).offset);
+            if ((*guard).offset - 1) < 0 {
+                (*guard).offset = (self.capacity - 1) as isize; // maybe a cap - 1?
+            } else {
+                (*guard).offset -= 1;
+            };
+            println!("{:<6}NEW OFFSET {:?}", "", (*guard).offset);
+            let elem: Box<T> = Box::from_raw(*self.data.offset((*guard).offset) as *mut T);
             *self.data.offset((*guard).offset) = ptr::null_mut();
-            (*guard).offset += 1;
-            (*guard).offset %= self.capacity as isize;
             self.size.fetch_sub(1, Ordering::Release);
-            return Some(elem);
+            return Some(*elem);
         }
-    }
-
-    pub unsafe fn pop_back_no_block(
-        &self,
-        _guard: &mut MutexGuard<BackGuardInner<S>>,
-    ) -> Option<T> {
-        unimplemented!();
     }
 
     /// WARNING do not call this if deq_lock has been locked by the same thread
     /// you WILL deadlock and have a bad time
     pub unsafe fn pop_front(&self) -> T {
         let mut guard = self.front_lock.lock().expect("deq lock poisoned");
+        println!("{:<4}POP_FRONT {:p}", "", self.data.offset((*guard).offset));
+        println!("{:<6}OFFSET {:?}", "", (*guard).offset);
         while self.size.load(Ordering::Acquire) == 0 {
             guard = self.not_empty.wait(guard).expect("oops could not wait deq");
         }
-        let elem: T = ptr::read(*self.data.offset((*guard).offset));
+        let elem: Box<T> = Box::from_raw(*self.data.offset((*guard).offset) as *mut T);
         *self.data.offset((*guard).offset) = ptr::null_mut();
         (*guard).offset += 1;
         (*guard).offset %= self.capacity as isize;
         self.size.fetch_sub(1, Ordering::Release);
-        return elem;
-    }
-
-    pub unsafe fn push_front(
-        &self,
-        _elem: T,
-        _guard: &mut MutexGuard<FrontGuardInner>,
-    ) -> Result<bool, Error<T>> {
-        unimplemented!();
+        println!("{:<6}ELEMENT {:?}", "", elem);
+        return *elem;
     }
 }
 
 #[derive(Debug)]
-pub struct Queue<T, S> {
+pub struct Queue<T, S>
+where
+    T: fmt::Debug,
+{
     inner: *mut InnerQueue<T, S>,
 }
 
-impl<T, S> Clone for Queue<T, S> {
+impl<T, S> Clone for Queue<T, S>
+where
+    T: fmt::Debug,
+{
     fn clone(&self) -> Queue<T, S> {
         Queue { inner: self.inner }
     }
 }
 
-#[allow(dead_code)]
-impl<T, S: ::std::default::Default> Queue<T, S> {
+impl<T, S: ::std::default::Default> Queue<T, S>
+where
+    T: fmt::Debug,
+{
     pub fn with_capacity(capacity: usize) -> Queue<T, S> {
         let inner = Box::into_raw(Box::new(InnerQueue::with_capacity(capacity)));
         Queue { inner: inner }
@@ -184,16 +201,13 @@ impl<T, S: ::std::default::Default> Queue<T, S> {
         unsafe { (*self.inner).push_back(elem, &mut guard) }
     }
 
+    /// Pops the back but DOES NOT shift the offset
+    ///
+    /// pop_back is probably a bad name. We remove the item under the current
+    /// offset but assume that the spot will be used again, eg in an overflow
+    /// situation.
     pub fn pop_back_no_block(&self, mut guard: &mut MutexGuard<BackGuardInner<S>>) -> Option<T> {
         unsafe { (*self.inner).pop_back_no_block(&mut guard) }
-    }
-
-    pub fn push_front(
-        &self,
-        elem: T,
-        mut guard: &mut MutexGuard<FrontGuardInner>,
-    ) -> Result<bool, Error<T>> {
-        unsafe { (*self.inner).push_front(elem, &mut guard) }
     }
 
     pub fn notify_not_empty(&self, _guard: &MutexGuard<FrontGuardInner>) {
@@ -201,10 +215,6 @@ impl<T, S: ::std::default::Default> Queue<T, S> {
         // situation has not happened and 2. we're not doing a notify without
         // holding the lock.
         unsafe { (*self.inner).not_empty.notify_all() }
-    }
-
-    pub fn pop_front_no_block(&self, guard: &mut MutexGuard<FrontGuardInner>) -> Option<T> {
-        unsafe { (*self.inner).pop_front_no_block(guard) }
     }
 
     pub fn pop_front(&mut self) -> T {

@@ -92,8 +92,7 @@ pub use self::receiver::Receiver;
 pub use self::sender::Sender;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-use std::fs;
-use std::mem;
+use std::{fmt, fs, mem};
 use std::path::Path;
 
 /// Defines the errors that hopper will bubble up
@@ -129,7 +128,7 @@ pub enum Error {
 /// ```
 pub fn channel<T>(name: &str, data_dir: &Path) -> Result<(Sender<T>, Receiver<T>), Error>
 where
-    T: Serialize + DeserializeOwned,
+    T: Serialize + DeserializeOwned + fmt::Debug,
 {
     channel_with_explicit_capacity(name, data_dir, 1_048_576, 1_048_576 * 100)
 }
@@ -150,7 +149,7 @@ pub fn channel_with_explicit_capacity<T>(
     max_disk_bytes: usize,
 ) -> Result<(Sender<T>, Receiver<T>), Error>
 where
-    T: Serialize + DeserializeOwned,
+    T: Serialize + DeserializeOwned + fmt::Debug,
 {
     let root = data_dir.join(name);
     let snd_root = root.clone();
@@ -176,6 +175,7 @@ mod test {
     use super::{channel, channel_with_explicit_capacity};
     use std::thread;
 
+    // check
     #[test]
     fn one_item_round_trip() {
         let dir = tempdir::TempDir::new("hopper").unwrap();
@@ -186,78 +186,45 @@ mod test {
         assert_eq!(Some(1), rcv.iter().next());
     }
 
+    // check
     #[test]
     fn zero_item_round_trip() {
         let dir = tempdir::TempDir::new("hopper").unwrap();
         let (mut snd, mut rcv) = channel("zero_item_round_trip", dir.path()).unwrap();
 
-        assert_eq!(None, rcv.iter().next());
-
         snd.send(1);
         assert_eq!(Some(1), rcv.iter().next());
     }
 
+    // check
     #[test]
     fn all_mem_buffer_round_trip() {
         let dir = tempdir::TempDir::new("hopper").unwrap();
         let (mut snd, mut rcv) = channel("zero_item_round_trip", dir.path()).unwrap();
 
-        assert_eq!(None, rcv.iter().next());
-
         let cap = 1022;
-        for _ in 0..cap {
-            snd.send(1);
+        for i in 0..cap {
+            snd.send(i);
         }
-        for _ in 0..cap {
-            assert_eq!(Some(1), rcv.iter().next());
-        }
-    }
-
-    #[test]
-    fn full_mem_buffer_into_disk_round_trip() {
-        let dir = tempdir::TempDir::new("hopper").unwrap();
-        let (mut snd, mut rcv) = channel("zero_item_round_trip", dir.path()).unwrap();
-
-        assert_eq!(None, rcv.iter().next());
-
-        let cap = 1024;
-        for _ in 0..cap {
-            snd.send(1);
-        }
-        for _ in 0..cap {
-            assert_eq!(Some(1), rcv.iter().next());
+        for i in 0..cap {
+            assert_eq!(Some(i), rcv.iter().next());
         }
     }
 
-    #[test]
-    fn full_mem_buffer_full_disk_round_trip() {
-        let dir = tempdir::TempDir::new("hopper").unwrap();
-        let (mut snd, mut rcv) = channel("zero_item_round_trip", dir.path()).unwrap();
-
-        assert_eq!(None, rcv.iter().next());
-
-        let cap = 2048;
-        for _ in 0..cap {
-            snd.send(1);
-        }
-        for _ in 0..cap {
-            assert_eq!(Some(1), rcv.iter().next());
-        }
-    }
-
+    // check
     #[test]
     fn full_mem_buffer_full_disk_multi_round_trip() {
         let dir = tempdir::TempDir::new("hopper").unwrap();
-        let (mut snd, mut rcv) = channel("zero_item_round_trip", dir.path()).unwrap();
+        let sz = ::std::mem::size_of::<u64>();
+        let (mut snd, mut rcv) =
+            channel_with_explicit_capacity("tst", dir.path(), 4 * sz, 8 * sz).unwrap();
 
-        assert_eq!(None, rcv.iter().next());
-
-        let cap = 4048;
-        for _ in 0..cap {
-            snd.send(1);
+        let cap = 16;
+        for i in 0..cap {
+            snd.send(i);
         }
-        for _ in 0..cap {
-            assert_eq!(Some(1), rcv.iter().next());
+        for i in 0..cap {
+            assert_eq!(Some(i), rcv.iter().next());
         }
     }
 
