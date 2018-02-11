@@ -40,11 +40,13 @@ where
     S: ::std::default::Default,
 {
     pub fn with_capacity(capacity: usize) -> InnerQueue<T, S> {
+        assert!(capacity > 0);
         let mut data: Vec<*const T> = Vec::with_capacity(capacity);
         for _ in 0..capacity {
             data.push(ptr::null());
         }
         let raw_data = (&mut data).as_mut_ptr();
+        // println!("{:<4}WITH_CAPACITY({}) |{:?}|", "", capacity, raw_data,);
         mem::forget(data);
         InnerQueue {
             capacity: capacity,
@@ -80,13 +82,13 @@ where
         elem: T,
         guard: &mut MutexGuard<BackGuardInner<S>>,
     ) -> Result<bool, Error<T>> {
-        println!(
-            "{:<4}PUSH_BACK[{:?}] |{:?}| {:?}",
-            "",
-            (*guard).offset,
-            self.data.offset((*guard).offset),
-            elem
-        );
+        // println!(
+        //     "{:<4}PUSH_BACK[{:?}] |{:?}| {:?}",
+        //     "",
+        //     (*guard).offset,
+        //     self.data.offset((*guard).offset),
+        //     elem
+        // );
         let mut must_wake_dequeuers = false;
         if !(*self.data.offset((*guard).offset)).is_null() {
             return Err(Error::Full(elem));
@@ -102,21 +104,21 @@ where
     }
 
     pub unsafe fn pop_back_no_block(&self, guard: &mut MutexGuard<BackGuardInner<S>>) -> Option<T> {
-        println!(
-            "{:<4}POP_BACK_NO_BLOCK {:p}",
-            "",
-            self.data.offset((*guard).offset)
-        );
+        // println!(
+        //     "{:<4}POP_BACK_NO_BLOCK {:p}",
+        //     "",
+        //     self.data.offset((*guard).offset)
+        // );
         if self.size.load(Ordering::Acquire) == 0 {
             return None;
         } else {
-            println!("{:<6}OFFSET {:?}", "", (*guard).offset);
+            // println!("{:<6}OFFSET {:?}", "", (*guard).offset);
             if ((*guard).offset - 1) < 0 {
                 (*guard).offset = (self.capacity - 1) as isize; // maybe a cap - 1?
             } else {
                 (*guard).offset -= 1;
             };
-            println!("{:<6}NEW OFFSET {:?}", "", (*guard).offset);
+            // println!("{:<6}NEW OFFSET {:?}", "", (*guard).offset);
             let elem: Box<T> = Box::from_raw(*self.data.offset((*guard).offset) as *mut T);
             *self.data.offset((*guard).offset) = ptr::null_mut();
             self.size.fetch_sub(1, Ordering::Release);
@@ -128,8 +130,8 @@ where
     /// you WILL deadlock and have a bad time
     pub unsafe fn pop_front(&self) -> T {
         let mut guard = self.front_lock.lock().expect("deq lock poisoned");
-        println!("{:<4}POP_FRONT {:p}", "", self.data.offset((*guard).offset));
-        println!("{:<6}OFFSET {:?}", "", (*guard).offset);
+        // println!("{:<4}POP_FRONT {:p}", "", self.data.offset((*guard).offset));
+        // println!("{:<6}OFFSET {:?}", "", (*guard).offset);
         while self.size.load(Ordering::Acquire) == 0 {
             guard = self.not_empty.wait(guard).expect("oops could not wait deq");
         }
@@ -138,7 +140,7 @@ where
         (*guard).offset += 1;
         (*guard).offset %= self.capacity as isize;
         self.size.fetch_sub(1, Ordering::Release);
-        println!("{:<6}ELEMENT {:?}", "", elem);
+        // println!("{:<6}ELEMENT {:?}", "", elem);
         return *elem;
     }
 }

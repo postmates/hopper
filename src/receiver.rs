@@ -174,18 +174,18 @@ where
             if self.disk_writes_to_read == 0 {
                 match self.mem_buffer.pop_front() {
                     private::Placement::Memory(ev) => {
-                        println!("[RECEIVER] MEMORY {:?}", ev);
+                        // println!("[RECEIVER] MEMORY {:?}", ev);
                         return Some(ev);
                     }
                     private::Placement::Disk(sz) => {
-                        println!("[RECEIVER] TOTAL DISK READS {:?}", sz);
+                        // println!("[RECEIVER] TOTAL DISK READS {:?}", sz);
                         self.disk_writes_to_read = sz;
                         continue;
                     }
                 }
             } else {
                 let ev = self.read_disk_value().unwrap();
-                println!("[RECEIVER] DISK READ {:?}", ev);
+                // println!("[RECEIVER] DISK READ {:?}", ev);
                 return Some(ev);
             }
         }

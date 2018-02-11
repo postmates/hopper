@@ -103,7 +103,7 @@ where
     }
 
     fn write_to_disk(&self, event: T, guard: &mut MutexGuard<BackGuardInner<SenderSync>>) {
-        println!("{:<4}WRITE TO DISK: {:?}", "", event);
+        // println!("{:<4}WRITE TO DISK: {:?}", "", event);
         let mut buf: Vec<u8> = Vec::with_capacity(64);
         buf.clear();
         let mut e = DeflateEncoder::new(buf, Compression::fast());
@@ -168,7 +168,7 @@ where
     ///  [u8] payload
     ///
     pub fn send(&mut self, event: T) {
-        println!("[SENDER] SEND {:?}", event);
+        // println!("[SENDER] SEND {:?}", event);
         let mut back_guard = self.mem_buffer.lock_back();
         let placed_event = private::Placement::Memory(event);
         match self.mem_buffer.push_back(placed_event, &mut back_guard) {
@@ -180,10 +180,10 @@ where
                 }
             }
             Err(deque::Error::Full(placed_event)) => {
-                println!("{:<2}[SENDER] SEND FULL", "");
+                // println!("{:<2}[SENDER] SEND FULL", "");
                 match self.mem_buffer.pop_back_no_block(&mut back_guard) {
                     None => {
-                        println!("{:<2}RECEIVER CLEARED US OUT", "");
+                        // println!("{:<2}RECEIVER CLEARED US OUT", "");
                         // receiver cleared us out
                         match self.mem_buffer.push_back(placed_event, &mut back_guard) {
                             Ok(must_wake_receiver) => {
@@ -199,7 +199,7 @@ where
                         let mut wrote_to_disk = 0;
                         match inner {
                             private::Placement::Memory(frnt) => {
-                                println!("{:<2}POP BACK MEMORY", "");
+                                // println!("{:<2}POP BACK MEMORY", "");
                                 self.write_to_disk(frnt, &mut back_guard);
                                 self.write_to_disk(
                                     placed_event.extract().unwrap(),
@@ -208,7 +208,7 @@ where
                                 wrote_to_disk += 2;
                             }
                             private::Placement::Disk(sz) => {
-                                println!("{:<2}POP BACK DISK", "");
+                                // println!("{:<2}POP BACK DISK", "");
                                 self.write_to_disk(
                                     placed_event.extract().unwrap(),
                                     &mut back_guard,
@@ -223,7 +223,7 @@ where
                         } else {
                             unreachable!()
                         }
-                        println!("{:<2}WROTE DISK VALUE", "");
+                        // println!("{:<2}WROTE DISK VALUE", "");
                         match self.mem_buffer
                             .push_back(private::Placement::Disk(wrote_to_disk), &mut back_guard)
                         {

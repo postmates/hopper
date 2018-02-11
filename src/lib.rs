@@ -160,6 +160,12 @@ where
     let sz = mem::size_of::<T>();
     let max_disk_bytes = ::std::cmp::min(max_disk_bytes, sz);
     let in_memory_limit: usize = max_memory_bytes / sz;
+    debug_assert!(
+        in_memory_limit != 0,
+        "max_memory_bytes {} / sz {}",
+        max_memory_bytes,
+        sz
+    );
     let q: private::Queue<T> = deque::Queue::with_capacity(in_memory_limit);
     let sender = Sender::new(name, &snd_root, max_disk_bytes, q.clone())?;
     let receiver = Receiver::new(&rcv_root, q)?;
@@ -173,9 +179,8 @@ mod test {
 
     use self::quickcheck::{QuickCheck, TestResult};
     use super::{channel, channel_with_explicit_capacity};
-    use std::thread;
+    use std::{mem, thread};
 
-    // check
     #[test]
     fn one_item_round_trip() {
         let dir = tempdir::TempDir::new("hopper").unwrap();
@@ -186,7 +191,6 @@ mod test {
         assert_eq!(Some(1), rcv.iter().next());
     }
 
-    // check
     #[test]
     fn zero_item_round_trip() {
         let dir = tempdir::TempDir::new("hopper").unwrap();
@@ -196,7 +200,6 @@ mod test {
         assert_eq!(Some(1), rcv.iter().next());
     }
 
-    // check
     #[test]
     fn all_mem_buffer_round_trip() {
         let dir = tempdir::TempDir::new("hopper").unwrap();
@@ -211,7 +214,6 @@ mod test {
         }
     }
 
-    // check
     #[test]
     fn full_mem_buffer_full_disk_multi_round_trip() {
         let dir = tempdir::TempDir::new("hopper").unwrap();
@@ -231,6 +233,10 @@ mod test {
     #[test]
     fn round_trip() {
         fn rnd_trip(in_memory_limit: usize, max_bytes: usize, evs: Vec<Vec<u32>>) -> TestResult {
+            let sz = mem::size_of_val(&evs);
+            if (in_memory_limit / sz) == 0 || (max_bytes / sz) == 0 {
+                return TestResult::discard();
+            }
             let dir = tempdir::TempDir::new("hopper").unwrap();
             let (mut snd, mut rcv) = channel_with_explicit_capacity(
                 "round_trip_order_preserved",
@@ -248,10 +254,7 @@ mod test {
             }
             TestResult::passed()
         }
-        QuickCheck::new()
-            .tests(100)
-            .max_tests(1000)
-            .quickcheck(rnd_trip as fn(usize, usize, Vec<Vec<u32>>) -> TestResult);
+        QuickCheck::new().quickcheck(rnd_trip as fn(usize, usize, Vec<Vec<u32>>) -> TestResult);
     }
 
     #[test]
@@ -276,73 +279,31 @@ mod test {
             }
             TestResult::passed()
         }
-        QuickCheck::new()
-            .tests(100)
-            .max_tests(1000)
-            .quickcheck(rnd_trip as fn(Vec<Vec<u32>>) -> TestResult);
+        QuickCheck::new().quickcheck(rnd_trip as fn(Vec<Vec<u32>>) -> TestResult);
     }
 
-    #[test]
-    fn concurrent_snd_and_rcv_round_trip() {
-        let in_memory_limit = 1024 * ::std::mem::size_of::<usize>();
-        let max_bytes: usize = 512;
-        let dir = tempdir::TempDir::new("hopper").unwrap();
-        let (snd, mut rcv) = channel_with_explicit_capacity(
-            "concurrent_snd_and_rcv_small_max_bytes",
-            dir.path(),
-            in_memory_limit,
-            max_bytes,
-        ).unwrap();
-        let max_thrs = 32;
-        let max_sz = 1000;
+    // TODO
+    // - Spruce up the QC tests along the lines of deque
+    // - Drop for deque
+    // - AFL everywhere
+    // - benchmarking
+    // - no println's
+    // - no TODO in the codebase
 
-        // construct the payload to send repeatedly 'pyld' and the final payload
-        // the sender should receive
-        let mut tst_pylds = Vec::new();
-        for i in 0..(max_sz * max_thrs) {
-            tst_pylds.push(i);
-        }
-
-        let mut joins = Vec::new();
-
-        // start our receiver thread
-        joins.push(thread::spawn(move || {
-            // assert that we receive every element in tst_pylds by pulling a new
-            // value from the rcv, then marking it out of tst_pylds
-            for _ in 0..(max_sz * max_thrs) {
-                loop {
-                    if let Some(nxt) = rcv.iter().next() {
-                        let idx = tst_pylds.binary_search(&nxt).expect("DID NOT FIND ELEMENT");
-                        tst_pylds.remove(idx);
-                        break;
-                    }
-                }
-            }
-            assert!(tst_pylds.is_empty());
-        }));
-
-        // start all our sender threads and blast away
-        for i in 0..max_thrs {
-            let mut thr_snd = snd.clone();
-            joins.push(thread::spawn(move || {
-                let base = i * max_sz;
-                for p in 0..max_sz {
-                    thr_snd.send(base + p);
-                }
-            }));
-        }
-
-        // wait until the senders are for sure done
-        for jh in joins {
-            jh.join().expect("Uh oh, child thread paniced!");
-        }
-    }
-
+    // TODO
+    // adapt to probe for exact contents return
     #[test]
     fn qc_concurrent_snd_and_rcv_round_trip() {
-        fn snd_rcv(evs: Vec<Vec<u32>>) -> TestResult {
-            let in_memory_limit = 1024 * ::std::mem::size_of::<usize>();
-            let max_bytes: usize = 512;
+        fn snd_rcv(
+            in_memory_limit: usize,
+            max_bytes: usize,
+            max_thrs: usize,
+            evs: Vec<Vec<u32>>,
+        ) -> TestResult {
+            let sz = mem::size_of_val(&evs);
+            if (in_memory_limit / sz) == 0 || (max_bytes / sz) == 0 || max_bytes > 10 {
+                return TestResult::discard();
+            }
             let dir = tempdir::TempDir::new("hopper").unwrap();
             println!("CONCURRENT SND_RECV TESTDIR: {:?}", dir);
             let (snd, mut rcv) = channel_with_explicit_capacity(
@@ -351,8 +312,6 @@ mod test {
                 in_memory_limit,
                 max_bytes,
             ).unwrap();
-
-            let max_thrs = 32;
 
             let mut joins = Vec::new();
 
@@ -386,8 +345,6 @@ mod test {
             TestResult::passed()
         }
         QuickCheck::new()
-            .tests(100)
-            .max_tests(1000)
-            .quickcheck(snd_rcv as fn(Vec<Vec<u32>>) -> TestResult);
+            .quickcheck(snd_rcv as fn(usize, usize, usize, Vec<Vec<u32>>) -> TestResult);
     }
 }
