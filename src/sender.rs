@@ -98,7 +98,9 @@ where
                     resource_type: PhantomData,
                 })
             }
-            Err(e) => panic!("[Sender] failed to start {:?}", e),
+            Err(e) => {
+                return Err(super::Error::IoError(e));
+            }
         }
     }
 

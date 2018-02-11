@@ -92,7 +92,7 @@ pub use self::receiver::Receiver;
 pub use self::sender::Sender;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-use std::{fmt, fs, mem};
+use std::{fmt, fs, io, mem};
 use std::path::Path;
 
 /// Defines the errors that hopper will bubble up
@@ -103,10 +103,12 @@ use std::path::Path;
 /// detriment of your program--where we might be able to recover but assume that
 /// if an unkonwn condition _is_ hit it's a result of something foreign tainting
 /// hopper's directory.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug)]
 pub enum Error {
     /// The directory given for use does not exist
     NoSuchDirectory,
+    /// Stdlib IO Error
+    IoError(io::Error),
 }
 
 /// Create a (Sender, Reciever) pair in a like fashion to
@@ -155,17 +157,16 @@ where
     let snd_root = root.clone();
     let rcv_root = root.clone();
     if !root.is_dir() {
-        fs::create_dir_all(root).expect("could not create directory");
+        match fs::create_dir_all(root) {
+            Ok(()) => {}
+            Err(e) => {
+                return Err(Error::IoError(e));
+            }
+        }
     }
     let sz = mem::size_of::<T>();
     let max_disk_bytes = ::std::cmp::max(sz, max_disk_bytes);
     let in_memory_limit: usize = ::std::cmp::max(sz, max_memory_bytes / sz);
-    debug_assert!(
-        in_memory_limit != 0,
-        "max_memory_bytes {} / sz {}",
-        max_memory_bytes,
-        sz
-    );
     let q: private::Queue<T> = deque::Queue::with_capacity(in_memory_limit);
     let sender = Sender::new(name, &snd_root, max_disk_bytes, q.clone())?;
     let receiver = Receiver::new(&rcv_root, q)?;

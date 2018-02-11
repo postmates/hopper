@@ -66,24 +66,32 @@ where
                 .unwrap();
             let full_path = data_dir.join(path.file_name().unwrap().to_str().unwrap());
             if id != seq_num {
-                fs::remove_file(full_path).expect("could not remove index file");
+                match fs::remove_file(full_path) {
+                    Ok(()) => {}
+                    Err(e) => {
+                        return Err(super::Error::IoError(e));
+                    }
+                }
             }
         }
         let log = data_dir.join(format!("{}", seq_num));
-        let mut fp = fs::OpenOptions::new()
-            .read(true)
-            .open(log)
-            .expect("RECEIVER could not open file");
-        fp.seek(SeekFrom::End(0))
-            .expect("could not get to end of file");
-        drop(guard);
-        Ok(Receiver {
-            root: data_dir.to_path_buf(),
-            fp: BufReader::new(fp),
-            resource_type: PhantomData,
-            mem_buffer: mem_buffer,
-            disk_writes_to_read: 0,
-        })
+        match fs::OpenOptions::new().read(true).open(log) {
+            Ok(mut fp) => {
+                fp.seek(SeekFrom::End(0))
+                    .expect("could not get to end of file");
+                drop(guard);
+                Ok(Receiver {
+                    root: data_dir.to_path_buf(),
+                    fp: BufReader::new(fp),
+                    resource_type: PhantomData,
+                    mem_buffer: mem_buffer,
+                    disk_writes_to_read: 0,
+                })
+            }
+            Err(e) => {
+                return Err(super::Error::IoError(e));
+            }
+        }
     }
 
     // This function is _only_ called when there's disk writes to be read. If a
