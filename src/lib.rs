@@ -158,8 +158,8 @@ where
         fs::create_dir_all(root).expect("could not create directory");
     }
     let sz = mem::size_of::<T>();
-    let max_disk_bytes = ::std::cmp::min(max_disk_bytes, sz);
-    let in_memory_limit: usize = max_memory_bytes / sz;
+    let max_disk_bytes = ::std::cmp::max(sz, max_disk_bytes);
+    let in_memory_limit: usize = ::std::cmp::max(sz, max_memory_bytes / sz);
     debug_assert!(
         in_memory_limit != 0,
         "max_memory_bytes {} / sz {}",
@@ -283,68 +283,108 @@ mod test {
     }
 
     // TODO
-    // - Spruce up the QC tests along the lines of deque
     // - Drop for deque
     // - AFL everywhere
     // - benchmarking
     // - no println's
     // - no TODO in the codebase
 
-    // TODO
-    // adapt to probe for exact contents return
     #[test]
-    fn qc_concurrent_snd_and_rcv_round_trip() {
-        fn snd_rcv(
-            in_memory_limit: usize,
-            max_bytes: usize,
-            max_thrs: usize,
-            evs: Vec<Vec<u32>>,
+    fn multi_thread_concurrent_snd_and_rcv_round_trip() {
+        fn inner(
+            total_senders: usize,
+            in_memory_bytes: usize,
+            disk_bytes: usize,
+            vals: Vec<u64>,
         ) -> TestResult {
-            let sz = mem::size_of_val(&evs);
-            if (in_memory_limit / sz) == 0 || (max_bytes / sz) == 0 || max_bytes > 10 {
+            let sz = mem::size_of::<u64>();
+            if total_senders == 0 || total_senders > 10 || vals.len() == 0
+                || (vals.len() < total_senders) || (in_memory_bytes / sz) == 0
+                || (disk_bytes / sz) == 0
+            {
                 return TestResult::discard();
             }
             let dir = tempdir::TempDir::new("hopper").unwrap();
-            println!("CONCURRENT SND_RECV TESTDIR: {:?}", dir);
-            let (snd, mut rcv) = channel_with_explicit_capacity(
-                "concurrent_snd_and_rcv_small_max_bytes",
-                dir.path(),
-                in_memory_limit,
-                max_bytes,
-            ).unwrap();
+            let (snd, mut rcv) =
+                channel_with_explicit_capacity("tst", dir.path(), in_memory_bytes, disk_bytes)
+                    .unwrap();
 
-            let mut joins = Vec::new();
+            let chunk_size = vals.len() / total_senders;
 
-            // start our receiver thread
-            let total_pylds = evs.len() * max_thrs;
-            joins.push(thread::spawn(move || {
-                for _ in 0..total_pylds {
-                    loop {
-                        if let Some(_) = rcv.iter().next() {
-                            break;
-                        }
-                    }
-                }
-            }));
-
-            // start all our sender threads and blast away
-            for _ in 0..max_thrs {
+            let mut snd_jh = Vec::new();
+            let snd_vals = vals.clone();
+            for chunk in snd_vals.chunks(chunk_size) {
                 let mut thr_snd = snd.clone();
-                let thr_evs = evs.clone();
-                joins.push(thread::spawn(move || {
-                    for e in thr_evs {
-                        thr_snd.send(e);
+                let chunk = chunk.to_vec();
+                snd_jh.push(thread::spawn(move || {
+                    let mut queued = Vec::new();
+                    for ev in chunk {
+                        thr_snd.send(ev);
+                        queued.push(ev);
                     }
-                }));
+                    queued
+                }))
             }
 
-            // wait until the senders are for sure done
-            for jh in joins {
-                jh.join().expect("Uh oh, child thread paniced!");
+            let expected_total_vals = vals.len();
+            let rcv_jh = thread::spawn(move || {
+                let mut collected = Vec::new();
+                let mut rcv_iter = rcv.iter();
+                while collected.len() < expected_total_vals {
+                    let v = rcv_iter.next().unwrap();
+                    collected.push(v);
+                }
+                collected
+            });
+
+            let mut snd_vals: Vec<u64> = Vec::new();
+            for jh in snd_jh {
+                snd_vals.append(&mut jh.join().expect("snd join failed"));
             }
+            let mut rcv_vals = rcv_jh.join().expect("rcv join failed");
+
+            rcv_vals.sort();
+            snd_vals.sort();
+
+            assert_eq!(rcv_vals, snd_vals);
             TestResult::passed()
         }
-        QuickCheck::new()
-            .quickcheck(snd_rcv as fn(usize, usize, usize, Vec<Vec<u32>>) -> TestResult);
+        QuickCheck::new().quickcheck(inner as fn(usize, usize, usize, Vec<u64>) -> TestResult);
     }
+
+    #[test]
+    fn single_sender_single_rcv_round_trip() {
+        // Similar to the multi sender test except now with a single sender we
+        // can guarantee order.
+        fn inner(in_memory_bytes: usize, disk_bytes: usize, mut vals: Vec<u64>) -> TestResult {
+            let sz = mem::size_of::<u64>();
+            if vals.len() == 0 || (in_memory_bytes / sz) == 0 || (disk_bytes / sz) == 0 {
+                return TestResult::discard();
+            }
+            let dir = tempdir::TempDir::new("hopper").unwrap();
+            let (mut snd, mut rcv) =
+                channel_with_explicit_capacity("tst", dir.path(), in_memory_bytes, disk_bytes)
+                    .unwrap();
+
+            let snd_vals = vals.clone();
+            let snd_jh = thread::spawn(move || {
+                for ev in snd_vals {
+                    snd.send(ev);
+                }
+            });
+
+            let rcv_jh = thread::spawn(move || {
+                let mut rcv_iter = rcv.iter();
+                while !vals.is_empty() {
+                    assert_eq!(vals.remove(0), rcv_iter.next().unwrap());
+                }
+            });
+
+            snd_jh.join().expect("snd join failed");
+            rcv_jh.join().expect("rcv join failed");
+            TestResult::passed()
+        }
+        QuickCheck::new().quickcheck(inner as fn(usize, usize, Vec<u64>) -> TestResult);
+    }
+
 }
