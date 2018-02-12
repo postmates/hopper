@@ -285,8 +285,6 @@ mod test {
 
     // TODO
     // - Drop for deque
-    // - AFL everywhere
-    // - benchmarking
     // - no println's
     // - no TODO in the codebase
 
