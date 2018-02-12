@@ -16,60 +16,83 @@ fn mpsc_tst(input: MpscInput) -> () {
     let mut snd_jh = Vec::new();
     for _ in 0..input.total_senders {
         let tx = tx.clone();
-        snd_jh.push(thread::spawn(move || {
+        let builder = thread::Builder::new();
+        if let Ok(handler) = builder.spawn(move || {
             for i in 0..chunk_size {
                 tx.send(i).unwrap();
             }
-        }))
+        }) {
+            snd_jh.push(handler);
+        }
     }
 
-    let rcv_jh = thread::spawn(move || {
+    let total_senders = snd_jh.len();
+    let builder = thread::Builder::new();
+    match builder.spawn(move || {
         let mut collected = 0;
-        while collected < input.ith {
+        while collected < (chunk_size * total_senders) {
             let _ = rx.recv().unwrap();
             collected += 1;
         }
-    });
-
-    for jh in snd_jh {
-        jh.join().expect("snd join failed");
+    }) {
+        Ok(rcv_jh) => {
+            for jh in snd_jh {
+                jh.join().expect("snd join failed");
+            }
+            rcv_jh.join().expect("rcv join failed");
+        }
+        _ => {
+            return;
+        }
     }
-    rcv_jh.join().expect("rcv join failed");
 }
 
 fn hopper_tst(input: HopperInput) -> () {
     let sz = mem::size_of::<u64>();
     let in_memory_bytes = sz * input.in_memory_total;
     let max_disk_bytes = sz * input.max_disk_total;
-    let dir = tempdir::TempDir::new("hopper").unwrap();
-    let (snd, mut rcv) =
-        channel_with_explicit_capacity("tst", dir.path(), in_memory_bytes, max_disk_bytes).unwrap();
+    if let Ok(dir) = tempdir::TempDir::new("hopper") {
+        if let Ok((snd, mut rcv)) =
+            channel_with_explicit_capacity("tst", dir.path(), in_memory_bytes, max_disk_bytes)
+        {
+            let chunk_size = input.ith / input.total_senders;
 
-    let chunk_size = input.ith / input.total_senders;
-
-    let mut snd_jh = Vec::new();
-    for _ in 0..input.total_senders {
-        let mut thr_snd = snd.clone();
-        snd_jh.push(thread::spawn(move || {
-            for i in 0..chunk_size {
-                thr_snd.send(i);
+            let mut snd_jh = Vec::new();
+            for _ in 0..input.total_senders {
+                let mut thr_snd = snd.clone();
+                let builder = thread::Builder::new();
+                if let Ok(handler) = builder.spawn(move || {
+                    for i in 0..chunk_size {
+                        thr_snd.send(i);
+                    }
+                }) {
+                    snd_jh.push(handler);
+                }
             }
-        }))
-    }
 
-    let rcv_jh = thread::spawn(move || {
-        let mut collected = 0;
-        let mut rcv_iter = rcv.iter();
-        while collected < input.ith {
-            let _ = rcv_iter.next().unwrap();
-            collected += 1;
+            let total_senders = snd_jh.len();
+            let builder = thread::Builder::new();
+            match builder.spawn(move || {
+                let mut collected = 0;
+                let mut rcv_iter = rcv.iter();
+                while collected < (chunk_size * total_senders) {
+                    if let Some(_) = rcv_iter.next() {
+                        collected += 1;
+                    }
+                }
+            }) {
+                Ok(rcv_jh) => {
+                    for jh in snd_jh {
+                        jh.join().expect("snd join failed");
+                    }
+                    rcv_jh.join().expect("rcv join failed");
+                }
+                _ => {
+                    return;
+                }
+            }
         }
-    });
-
-    for jh in snd_jh {
-        jh.join().expect("snd join failed");
     }
-    rcv_jh.join().expect("rcv join failed");
 }
 
 #[derive(Debug, Clone, Copy)]
