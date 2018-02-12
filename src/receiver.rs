@@ -37,56 +37,38 @@ where
         if !data_dir.is_dir() {
             return Err(super::Error::NoSuchDirectory);
         }
-        let seq_num = fs::read_dir(data_dir)
-            .unwrap()
-            .map(|de| {
-                de.unwrap()
-                    .path()
-                    .file_name()
-                    .unwrap()
-                    .to_str()
-                    .unwrap()
-                    .parse::<usize>()
-                    .unwrap()
-            })
-            .max()
-            .unwrap();
-        // Remove all index files we've fast-forwarded over
-        //
-        // As the senders will restart with writes_to_read at 0, we're going to
-        // have to make sure that receiver is on the same page with regard to
-        // place on disk.
-        for fname in fs::read_dir(data_dir).unwrap() {
-            let path = fname.unwrap().path();
-            let id = path.file_name()
-                .unwrap()
-                .to_str()
-                .unwrap()
-                .parse::<usize>()
-                .unwrap();
-            let full_path = data_dir.join(path.file_name().unwrap().to_str().unwrap());
-            if id != seq_num {
-                match fs::remove_file(full_path) {
-                    Ok(()) => {}
+        match private::read_seq_num(data_dir) {
+            Ok(seq_num) => {
+                // Remove all index files we've fast-forwarded over
+                //
+                // As the senders will restart with writes_to_read at 0, we're going to
+                // have to make sure that receiver is on the same page with regard to
+                // place on disk.
+                match private::delete_all_but(data_dir, seq_num) {
+                    Ok(()) => {
+                        let log = data_dir.join(format!("{}", seq_num));
+                        match fs::OpenOptions::new().read(true).open(log) {
+                            Ok(mut fp) => {
+                                fp.seek(SeekFrom::End(0))
+                                    .expect("could not get to end of file");
+                                drop(guard);
+                                Ok(Receiver {
+                                    root: data_dir.to_path_buf(),
+                                    fp: BufReader::new(fp),
+                                    resource_type: PhantomData,
+                                    mem_buffer: mem_buffer,
+                                    disk_writes_to_read: 0,
+                                })
+                            }
+                            Err(e) => {
+                                return Err(super::Error::IoError(e));
+                            }
+                        }
+                    }
                     Err(e) => {
                         return Err(super::Error::IoError(e));
                     }
                 }
-            }
-        }
-        let log = data_dir.join(format!("{}", seq_num));
-        match fs::OpenOptions::new().read(true).open(log) {
-            Ok(mut fp) => {
-                fp.seek(SeekFrom::End(0))
-                    .expect("could not get to end of file");
-                drop(guard);
-                Ok(Receiver {
-                    root: data_dir.to_path_buf(),
-                    fp: BufReader::new(fp),
-                    resource_type: PhantomData,
-                    mem_buffer: mem_buffer,
-                    disk_writes_to_read: 0,
-                })
             }
             Err(e) => {
                 return Err(super::Error::IoError(e));

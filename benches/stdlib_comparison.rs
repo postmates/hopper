@@ -145,5 +145,9 @@ fn mpsc_benchmark(c: &mut Criterion) {
     );
 }
 
-criterion_group!(benches, hopper_benchmark, mpsc_benchmark);
+criterion_group!{
+    name = benches;
+    config = Criterion::default().without_plots();
+    targets = hopper_benchmark, mpsc_benchmark
+}
 criterion_main!(benches);

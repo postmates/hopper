@@ -1,5 +1,7 @@
 use sender;
 use deque;
+use std::{cmp, fs, io};
+use std::path::Path;
 
 #[derive(Debug)]
 pub enum Placement<T> {
@@ -17,3 +19,28 @@ impl<T> Placement<T> {
 }
 
 pub type Queue<T> = deque::Queue<Placement<T>, sender::SenderSync>;
+
+pub fn read_seq_num(data_dir: &Path) -> io::Result<usize> {
+    let mut max = 0;
+    for directory_entry in fs::read_dir(data_dir)? {
+        let num = directory_entry?
+            .file_name()
+            .to_str()
+            .unwrap()
+            .parse::<usize>()
+            .unwrap();
+        max = cmp::max(num, max);
+    }
+    Ok(max)
+}
+
+pub fn delete_all_but(data_dir: &Path, seq_num: usize) -> io::Result<()> {
+    for directory_entry in fs::read_dir(data_dir)? {
+        let de = directory_entry?;
+        let id = de.file_name().to_str().unwrap().parse::<usize>().unwrap();
+        if id != seq_num {
+            fs::remove_file(de.path())?
+        }
+    }
+    Ok(())
+}

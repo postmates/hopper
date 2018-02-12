@@ -39,12 +39,13 @@ where
     T: Serialize + Deserialize<'de> + fmt::Debug,
 {
     fn clone(&self) -> Sender<T> {
-        Sender::new(
-            self.name.clone(),
-            &self.root,
-            self.max_disk_bytes,
-            self.mem_buffer.clone(),
-        ).expect("COULD NOT CLONE")
+        Sender {
+            name: self.name.clone(),
+            root: self.root.clone(),
+            max_disk_bytes: self.max_disk_bytes,
+            mem_buffer: self.mem_buffer.clone(),
+            resource_type: self.resource_type,
+        }
     }
 }
 
@@ -67,36 +68,26 @@ where
         if !data_dir.is_dir() {
             return Err(super::Error::NoSuchDirectory);
         }
-        let seq_num = match fs::read_dir(data_dir)
-            .unwrap()
-            .map(|de| {
-                de.unwrap()
-                    .path()
-                    .file_name()
-                    .unwrap()
-                    .to_str()
-                    .unwrap()
-                    .parse::<usize>()
-                    .unwrap()
-            })
-            .max()
-        {
-            Some(sn) => sn,
-            None => 0,
-        };
-        let log = data_dir.join(format!("{}", seq_num));
-        match fs::OpenOptions::new().append(true).create(true).open(&log) {
-            Ok(fp) => {
-                (*guard).inner.sender_fp = Some(BufWriter::new(fp));
-                (*guard).inner.sender_seq_num = seq_num;
-                (*guard).inner.path = log;
-                Ok(Sender {
-                    name: name.into(),
-                    root: data_dir.to_path_buf(),
-                    max_disk_bytes: max_disk_bytes,
-                    mem_buffer: mem_buffer,
-                    resource_type: PhantomData,
-                })
+        match private::read_seq_num(data_dir) {
+            Ok(seq_num) => {
+                let log = data_dir.join(format!("{}", seq_num));
+                match fs::OpenOptions::new().append(true).create(true).open(&log) {
+                    Ok(fp) => {
+                        (*guard).inner.sender_fp = Some(BufWriter::new(fp));
+                        (*guard).inner.sender_seq_num = seq_num;
+                        (*guard).inner.path = log;
+                        Ok(Sender {
+                            name: name.into(),
+                            root: data_dir.to_path_buf(),
+                            max_disk_bytes: max_disk_bytes,
+                            mem_buffer: mem_buffer,
+                            resource_type: PhantomData,
+                        })
+                    }
+                    Err(e) => {
+                        return Err(super::Error::IoError(e));
+                    }
+                }
             }
             Err(e) => {
                 return Err(super::Error::IoError(e));
