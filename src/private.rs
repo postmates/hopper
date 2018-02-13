@@ -34,6 +34,23 @@ pub fn read_seq_num(data_dir: &Path) -> io::Result<usize> {
     Ok(max)
 }
 
+pub fn read_seq_num_min(data_dir: &Path) -> io::Result<usize> {
+    let mut min = usize::max_value();
+    let mut worked = false;
+    for directory_entry in fs::read_dir(data_dir)? {
+        let num = directory_entry?
+            .file_name()
+            .to_str()
+            .unwrap()
+            .parse::<usize>()
+            .unwrap();
+        worked = true;
+        min = cmp::min(num, min);
+    }
+    assert!(worked);
+    Ok(min)
+}
+
 pub fn delete_all_but(data_dir: &Path, seq_num: usize) -> io::Result<()> {
     for directory_entry in fs::read_dir(data_dir)? {
         let de = directory_entry?;

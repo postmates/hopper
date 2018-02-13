@@ -165,7 +165,9 @@ where
         }
     }
     let sz = mem::size_of::<T>();
-    let max_disk_bytes = ::std::cmp::max(sz, max_disk_bytes);
+    let max_disk_bytes = ::std::cmp::max(1_048_576, max_disk_bytes); // TODO
+                                                                     // note that we cap the max_disk_bytes to 1Mb to avoid FD exhaustion, make GH
+                                                                     // issue to remove restriction
     let in_memory_limit: usize = ::std::cmp::max(sz, max_memory_bytes / sz);
     let q: private::Queue<T> = deque::Queue::with_capacity(in_memory_limit);
     let sender = Sender::new(name, &snd_root, max_disk_bytes, q.clone())?;
@@ -179,57 +181,8 @@ mod test {
     extern crate tempdir;
 
     use self::quickcheck::{QuickCheck, TestResult};
-    use super::{channel, channel_with_explicit_capacity};
+    use super::channel_with_explicit_capacity;
     use std::{mem, thread};
-
-    #[test]
-    fn one_item_round_trip() {
-        let dir = tempdir::TempDir::new("hopper").unwrap();
-        let (mut snd, mut rcv) = channel("one_item_round_trip", dir.path()).unwrap();
-
-        snd.send(1);
-
-        assert_eq!(Some(1), rcv.iter().next());
-    }
-
-    #[test]
-    fn zero_item_round_trip() {
-        let dir = tempdir::TempDir::new("hopper").unwrap();
-        let (mut snd, mut rcv) = channel("zero_item_round_trip", dir.path()).unwrap();
-
-        snd.send(1);
-        assert_eq!(Some(1), rcv.iter().next());
-    }
-
-    #[test]
-    fn all_mem_buffer_round_trip() {
-        let dir = tempdir::TempDir::new("hopper").unwrap();
-        let (mut snd, mut rcv) = channel("zero_item_round_trip", dir.path()).unwrap();
-
-        let cap = 1022;
-        for i in 0..cap {
-            snd.send(i);
-        }
-        for i in 0..cap {
-            assert_eq!(Some(i), rcv.iter().next());
-        }
-    }
-
-    #[test]
-    fn full_mem_buffer_full_disk_multi_round_trip() {
-        let dir = tempdir::TempDir::new("hopper").unwrap();
-        let sz = ::std::mem::size_of::<u64>();
-        let (mut snd, mut rcv) =
-            channel_with_explicit_capacity("tst", dir.path(), 4 * sz, 8 * sz).unwrap();
-
-        let cap = 16;
-        for i in 0..cap {
-            snd.send(i);
-        }
-        for i in 0..cap {
-            assert_eq!(Some(i), rcv.iter().next());
-        }
-    }
 
     #[test]
     fn round_trip() {
@@ -238,54 +191,49 @@ mod test {
             if (in_memory_limit / sz) == 0 || (max_bytes / sz) == 0 {
                 return TestResult::discard();
             }
-            let dir = tempdir::TempDir::new("hopper").unwrap();
-            let (mut snd, mut rcv) = channel_with_explicit_capacity(
-                "round_trip_order_preserved",
-                dir.path(),
-                in_memory_limit,
-                max_bytes,
-            ).unwrap();
-
-            for ev in evs.clone() {
-                snd.send(ev);
-            }
-
-            for ev in evs {
-                assert_eq!(Some(ev), rcv.iter().next());
+            if let Ok(dir) = tempdir::TempDir::new("hopper") {
+                if let Ok((mut snd, mut rcv)) = channel_with_explicit_capacity(
+                    "round_trip_order_preserved",
+                    dir.path(),
+                    in_memory_limit,
+                    max_bytes,
+                ) {
+                    for mut ev in evs.clone() {
+                        loop {
+                            match snd.send(ev) {
+                                Ok(()) => {
+                                    break;
+                                }
+                                Err(res) => {
+                                    ev = res.0;
+                                }
+                            }
+                        }
+                    }
+                    for ev in evs {
+                        let mut attempts = 0;
+                        loop {
+                            match rcv.iter().next() {
+                                None => {
+                                    attempts += 1;
+                                    assert!(attempts < 10_000);
+                                }
+                                Some(res) => {
+                                    assert_eq!(res, ev);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
             }
             TestResult::passed()
         }
         QuickCheck::new().quickcheck(rnd_trip as fn(usize, usize, Vec<Vec<u32>>) -> TestResult);
     }
 
-    #[test]
-    fn round_trip_small_max_bytes() {
-        fn rnd_trip(evs: Vec<Vec<u32>>) -> TestResult {
-            let in_memory_limit: usize = 1024 * ::std::mem::size_of::<u32>();
-            let max_bytes: usize = 128;
-            let dir = tempdir::TempDir::new("hopper").unwrap();
-            let (mut snd, mut rcv) = channel_with_explicit_capacity(
-                "small_max_bytes",
-                dir.path(),
-                in_memory_limit,
-                max_bytes,
-            ).unwrap();
-
-            for ev in evs.clone() {
-                snd.send(ev);
-            }
-
-            for ev in evs {
-                assert_eq!(Some(ev), rcv.iter().next());
-            }
-            TestResult::passed()
-        }
-        QuickCheck::new().quickcheck(rnd_trip as fn(Vec<Vec<u32>>) -> TestResult);
-    }
-
     // TODO
     // - Drop for deque
-    // - no println's
     // - no TODO in the codebase
 
     #[test]
@@ -303,87 +251,141 @@ mod test {
             {
                 return TestResult::discard();
             }
-            let dir = tempdir::TempDir::new("hopper").unwrap();
-            let (snd, mut rcv) =
-                channel_with_explicit_capacity("tst", dir.path(), in_memory_bytes, disk_bytes)
-                    .unwrap();
+            if let Ok(dir) = tempdir::TempDir::new("hopper") {
+                if let Ok((snd, mut rcv)) =
+                    channel_with_explicit_capacity("tst", dir.path(), in_memory_bytes, disk_bytes)
+                {
+                    let chunk_size = vals.len() / total_senders;
 
-            let chunk_size = vals.len() / total_senders;
-
-            let mut snd_jh = Vec::new();
-            let snd_vals = vals.clone();
-            for chunk in snd_vals.chunks(chunk_size) {
-                let mut thr_snd = snd.clone();
-                let chunk = chunk.to_vec();
-                snd_jh.push(thread::spawn(move || {
-                    let mut queued = Vec::new();
-                    for ev in chunk {
-                        thr_snd.send(ev);
-                        queued.push(ev);
+                    let mut snd_jh = Vec::new();
+                    let snd_vals = vals.clone();
+                    for chunk in snd_vals.chunks(chunk_size) {
+                        let mut thr_snd = snd.clone();
+                        let chunk = chunk.to_vec();
+                        snd_jh.push(thread::spawn(move || {
+                            let mut queued = Vec::new();
+                            for mut ev in chunk {
+                                loop {
+                                    match thr_snd.send(ev) {
+                                        Err(res) => {
+                                            ev = res.0;
+                                        }
+                                        Ok(()) => {
+                                            break;
+                                        }
+                                    }
+                                }
+                                queued.push(ev);
+                            }
+                            queued
+                        }))
                     }
-                    queued
-                }))
-            }
 
-            let expected_total_vals = vals.len();
-            let rcv_jh = thread::spawn(move || {
-                let mut collected = Vec::new();
-                let mut rcv_iter = rcv.iter();
-                while collected.len() < expected_total_vals {
-                    let v = rcv_iter.next().unwrap();
-                    collected.push(v);
+                    let expected_total_vals = vals.len();
+                    let rcv_jh = thread::spawn(move || {
+                        let mut collected = Vec::new();
+                        let mut rcv_iter = rcv.iter();
+                        while collected.len() < expected_total_vals {
+                            let mut attempts = 0;
+                            loop {
+                                match rcv_iter.next() {
+                                    None => {
+                                        attempts += 1;
+                                        assert!(attempts < 10_000);
+                                    }
+                                    Some(res) => {
+                                        collected.push(res);
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        collected
+                    });
+
+                    let mut snd_vals: Vec<u64> = Vec::new();
+                    for jh in snd_jh {
+                        snd_vals.append(&mut jh.join().expect("snd join failed"));
+                    }
+                    let mut rcv_vals = rcv_jh.join().expect("rcv join failed");
+
+                    rcv_vals.sort();
+                    snd_vals.sort();
+
+                    assert_eq!(rcv_vals, snd_vals);
                 }
-                collected
-            });
-
-            let mut snd_vals: Vec<u64> = Vec::new();
-            for jh in snd_jh {
-                snd_vals.append(&mut jh.join().expect("snd join failed"));
             }
-            let mut rcv_vals = rcv_jh.join().expect("rcv join failed");
-
-            rcv_vals.sort();
-            snd_vals.sort();
-
-            assert_eq!(rcv_vals, snd_vals);
             TestResult::passed()
         }
         QuickCheck::new().quickcheck(inner as fn(usize, usize, usize, Vec<u64>) -> TestResult);
+    }
+
+    fn single_sender_single_rcv_round_trip_exp(
+        in_memory_bytes: usize,
+        disk_bytes: usize,
+        total_vals: usize,
+    ) -> bool {
+        if let Ok(dir) = tempdir::TempDir::new("hopper") {
+            if let Ok((mut snd, mut rcv)) =
+                channel_with_explicit_capacity("tst", dir.path(), in_memory_bytes, disk_bytes)
+            {
+                let builder = thread::Builder::new();
+                if let Ok(snd_jh) = builder.spawn(move || {
+                    for i in 0..total_vals {
+                        loop {
+                            if snd.send(i).is_ok() {
+                                break;
+                            }
+                        }
+                    }
+                }) {
+                    let builder = thread::Builder::new();
+                    if let Ok(rcv_jh) = builder.spawn(move || {
+                        let mut rcv_iter = rcv.iter();
+                        let mut cur = 0;
+                        while cur != total_vals {
+                            let mut attempts = 0;
+                            loop {
+                                if let Some(rcvd) = rcv_iter.next() {
+                                    debug_assert_eq!(
+                                        cur, rcvd,
+                                        "FAILED TO GET ALL IN ORDER: {:?}",
+                                        rcvd,
+                                    );
+                                    cur += 1;
+                                    break;
+                                } else {
+                                    attempts += 1;
+                                    assert!(attempts < 10_000);
+                                }
+                            }
+                        }
+                    }) {
+                        snd_jh.join().expect("snd join failed");
+                        rcv_jh.join().expect("rcv join failed");
+                    }
+                }
+            }
+        }
+        true
     }
 
     #[test]
     fn single_sender_single_rcv_round_trip() {
         // Similar to the multi sender test except now with a single sender we
         // can guarantee order.
-        fn inner(in_memory_bytes: usize, disk_bytes: usize, mut vals: Vec<u64>) -> TestResult {
+        fn inner(in_memory_bytes: usize, disk_bytes: usize, total_vals: usize) -> TestResult {
             let sz = mem::size_of::<u64>();
-            if vals.len() == 0 || (in_memory_bytes / sz) == 0 || (disk_bytes / sz) == 0 {
+            if total_vals == 0 || (in_memory_bytes / sz) == 0 || (disk_bytes / sz) == 0 {
                 return TestResult::discard();
             }
-            let dir = tempdir::TempDir::new("hopper").unwrap();
-            let (mut snd, mut rcv) =
-                channel_with_explicit_capacity("tst", dir.path(), in_memory_bytes, disk_bytes)
-                    .unwrap();
-
-            let snd_vals = vals.clone();
-            let snd_jh = thread::spawn(move || {
-                for ev in snd_vals {
-                    snd.send(ev);
-                }
-            });
-
-            let rcv_jh = thread::spawn(move || {
-                let mut rcv_iter = rcv.iter();
-                while !vals.is_empty() {
-                    assert_eq!(vals.remove(0), rcv_iter.next().unwrap());
-                }
-            });
-
-            snd_jh.join().expect("snd join failed");
-            rcv_jh.join().expect("rcv join failed");
-            TestResult::passed()
+            TestResult::from_bool(single_sender_single_rcv_round_trip_exp(
+                in_memory_bytes,
+                disk_bytes,
+                total_vals,
+            ))
         }
-        QuickCheck::new().quickcheck(inner as fn(usize, usize, Vec<u64>) -> TestResult);
+        QuickCheck::new().quickcheck(inner as fn(usize, usize, usize) -> TestResult);
     }
 
 }

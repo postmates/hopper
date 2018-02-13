@@ -2,8 +2,7 @@ use bincode::{serialize_into, Infinite};
 use byteorder::{BigEndian, WriteBytesExt};
 use private;
 use serde::{Deserialize, Serialize};
-use std::fmt;
-use std::fs;
+use std::{fmt, fs};
 use std::sync::MutexGuard;
 use deque::BackGuardInner;
 use std::io::{BufWriter, Write};
@@ -95,8 +94,11 @@ where
         }
     }
 
-    fn write_to_disk(&self, event: T, guard: &mut MutexGuard<BackGuardInner<SenderSync>>) {
-        // println!("{:<4}WRITE TO DISK: {:?}", "", event);
+    fn write_to_disk(
+        &self,
+        event: T,
+        guard: &mut MutexGuard<BackGuardInner<SenderSync>>,
+    ) -> Result<(), (T, super::Error)> {
         let mut buf: Vec<u8> = Vec::with_capacity(64);
         buf.clear();
         let mut e = DeflateEncoder::new(buf, Compression::fast());
@@ -133,7 +135,9 @@ where
                     (*guard).inner.sender_fp = Some(BufWriter::new(fp));
                     (*guard).inner.bytes_written = 0;
                 }
-                Err(e) => panic!("FAILED TO OPEN {:?} WITH {:?}", (*guard).inner.path, e),
+                Err(e) => {
+                    return Err((event, super::Error::IoError(e)));
+                }
             }
         }
 
@@ -142,17 +146,22 @@ where
         if let Some(ref mut fp) = (*guard).inner.sender_fp {
             match fp.write_u64::<BigEndian>(payload_len as u64) {
                 Ok(()) => bytes_written += ::std::mem::size_of::<u64>(),
-                Err(e) => panic!("Write error: {}", e),
+                Err(e) => {
+                    return Err((event, super::Error::IoError(e)));
+                }
             };
             match fp.write(&buf[..]) {
                 Ok(written) => {
                     assert_eq!(payload_len, written);
                     bytes_written += written;
                 }
-                Err(e) => panic!("Write error: {}", e),
+                Err(e) => {
+                    return Err((event, super::Error::IoError(e)));
+                }
             }
         }
         (*guard).inner.bytes_written += bytes_written;
+        Ok(())
     }
 
     /// send writes data out in chunks, like so:
@@ -160,8 +169,7 @@ where
     ///  u32: payload_size
     ///  [u8] payload
     ///
-    pub fn send(&mut self, event: T) {
-        // println!("[SENDER] SEND {:?}", event);
+    pub fn send(&mut self, event: T) -> Result<(), (T, super::Error)> {
         let mut back_guard = self.mem_buffer.lock_back();
         let placed_event = private::Placement::Memory(event);
         match self.mem_buffer.push_back(placed_event, &mut back_guard) {
@@ -171,12 +179,11 @@ where
                     self.mem_buffer.notify_not_empty(&front_guard);
                     drop(front_guard);
                 }
+                Ok(())
             }
             Err(deque::Error::Full(placed_event)) => {
-                // println!("{:<2}[SENDER] SEND FULL", "");
                 match self.mem_buffer.pop_back_no_block(&mut back_guard) {
                     None => {
-                        // println!("{:<2}RECEIVER CLEARED US OUT", "");
                         // receiver cleared us out
                         match self.mem_buffer.push_back(placed_event, &mut back_guard) {
                             Ok(must_wake_receiver) => {
@@ -184,6 +191,7 @@ where
                                     let mut front_guard = self.mem_buffer.lock_front();
                                     self.mem_buffer.notify_not_empty(&front_guard);
                                 }
+                                Ok(())
                             }
                             _ => unreachable!(),
                         }
@@ -192,20 +200,18 @@ where
                         let mut wrote_to_disk = 0;
                         match inner {
                             private::Placement::Memory(frnt) => {
-                                // println!("{:<2}POP BACK MEMORY", "");
-                                self.write_to_disk(frnt, &mut back_guard);
+                                self.write_to_disk(frnt, &mut back_guard)?;
                                 self.write_to_disk(
                                     placed_event.extract().unwrap(),
                                     &mut back_guard,
-                                );
+                                )?;
                                 wrote_to_disk += 2;
                             }
                             private::Placement::Disk(sz) => {
-                                // println!("{:<2}POP BACK DISK", "");
                                 self.write_to_disk(
                                     placed_event.extract().unwrap(),
                                     &mut back_guard,
-                                );
+                                )?;
                                 wrote_to_disk += sz;
                                 wrote_to_disk += 1;
                             }
@@ -216,7 +222,6 @@ where
                         } else {
                             unreachable!()
                         }
-                        // println!("{:<2}WROTE DISK VALUE", "");
                         match self.mem_buffer
                             .push_back(private::Placement::Disk(wrote_to_disk), &mut back_guard)
                         {
@@ -226,6 +231,7 @@ where
                                     self.mem_buffer.notify_not_empty(&front_guard);
                                     drop(front_guard);
                                 }
+                                Ok(())
                             }
                             _ => unreachable!(),
                         }

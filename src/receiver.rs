@@ -78,7 +78,7 @@ where
 
     // This function is _only_ called when there's disk writes to be read. If a
     // disk read happens and no `T` is returned this is an unrecoverable error.
-    fn read_disk_value(&mut self) -> Result<T, ()> {
+    fn read_disk_value(&mut self) -> Result<T, super::Error> {
         loop {
             match self.fp.read_u64::<BigEndian>() {
                 Ok(payload_size_in_bytes) => {
@@ -115,34 +115,27 @@ where
                                 .metadata()
                                 .expect("could not get metadata at UnexpectedEof");
                             if metadata.permissions().readonly() {
-                                // TODO all these unwraps are a silent death
-                                let seq_num = fs::read_dir(&self.root)
-                                    .unwrap()
-                                    .map(|de| {
-                                        de.unwrap()
-                                            .path()
-                                            .file_name()
-                                            .unwrap()
-                                            .to_str()
-                                            .unwrap()
-                                            .parse::<usize>()
-                                            .unwrap()
-                                    })
-                                    .min()
-                                    .unwrap();
-                                let old_log = self.root.join(format!("{}", seq_num));
-                                fs::remove_file(old_log).expect("could not remove log");
-                                let lg = self.root.join(format!("{}", seq_num.wrapping_add(1)));
-                                match fs::OpenOptions::new().read(true).open(&lg) {
-                                    Ok(fp) => {
-                                        self.fp = BufReader::new(fp);
-                                        continue;
+                                match private::read_seq_num_min(&self.root) {
+                                    Ok(seq_num) => {
+                                        let old_log = self.root.join(format!("{}", seq_num));
+                                        fs::remove_file(old_log).expect("could not remove log");
+                                        let lg =
+                                            self.root.join(format!("{}", seq_num.wrapping_add(1)));
+                                        match fs::OpenOptions::new().read(true).open(&lg) {
+                                            Ok(fp) => {
+                                                self.fp = BufReader::new(fp);
+                                                continue;
+                                            }
+                                            Err(e) => return Err(super::Error::IoError(e)),
+                                        }
                                     }
-                                    Err(_n) => return Err(()),
+                                    Err(e) => {
+                                        return Err(super::Error::IoError(e));
+                                    }
                                 }
                             }
                         }
-                        _ => return Err(()),
+                        _ => return Err(super::Error::IoError(e)),
                     }
                 }
             }
@@ -164,19 +157,18 @@ where
             if self.disk_writes_to_read == 0 {
                 match self.mem_buffer.pop_front() {
                     private::Placement::Memory(ev) => {
-                        // println!("[RECEIVER] MEMORY {:?}", ev);
                         return Some(ev);
                     }
                     private::Placement::Disk(sz) => {
-                        // println!("[RECEIVER] TOTAL DISK READS {:?}", sz);
                         self.disk_writes_to_read = sz;
                         continue;
                     }
                 }
             } else {
-                let ev = self.read_disk_value().unwrap();
-                // println!("[RECEIVER] DISK READ {:?}", ev);
-                return Some(ev);
+                match self.read_disk_value() {
+                    Ok(ev) => return Some(ev),
+                    Err(_) => return None,
+                }
             }
         }
     }
