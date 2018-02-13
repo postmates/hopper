@@ -52,9 +52,11 @@ pub fn read_seq_num_min(data_dir: &Path) -> io::Result<usize> {
 }
 
 pub fn clear_directory(data_dir: &Path) -> io::Result<()> {
-    for directory_entry in fs::read_dir(data_dir)? {
-        let de = directory_entry?;
-        fs::remove_file(de.path())?
+    if data_dir.is_dir() {
+        for directory_entry in fs::read_dir(data_dir)? {
+            let de = directory_entry?;
+            fs::remove_file(de.path())?
+        }
     }
     Ok(())
 }

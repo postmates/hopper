@@ -171,8 +171,8 @@ where
     if let Err(e) = private::clear_directory(&root) {
         return Err(Error::IoError(e));
     }
-    let receiver = Receiver::new(&root, q.clone())?;
-    let sender = Sender::new(name, &root, max_disk_bytes, q)?;
+    let sender = Sender::new(name, &root, max_disk_bytes, q.clone())?;
+    let receiver = Receiver::new(&root, q)?;
     Ok((sender, receiver))
 }
 
