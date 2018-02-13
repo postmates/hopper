@@ -142,8 +142,10 @@ where
 /// queue files are stored in `data_dir`. The Sender is clonable.
 ///
 /// This function gives control to the user over the maximum size of hopper's
-/// queue files as `max_disk_bytes`, though not the total disk allocation that
-/// may be made. Hopper will only be allowed to buffer 2*`max_memory_bytes`.
+/// queue files as `max_disk_bytes`. The user may specify any value for
+/// `max_disk_bytes` but the minimum that will be used in practice is
+/// 1Mb. Likewise the user may control how many bytes hopper holds in memory
+/// with `max_memory_bytes`. The minium is `std::mem::size_of::<T>()`.
 pub fn channel_with_explicit_capacity<T>(
     name: &str,
     data_dir: &Path,
@@ -163,9 +165,7 @@ where
         }
     }
     let sz = mem::size_of::<T>();
-    let max_disk_bytes = ::std::cmp::max(1_048_576, max_disk_bytes); // TODO
-                                                                     // note that we cap the max_disk_bytes to 1Mb to avoid FD exhaustion, make GH
-                                                                     // issue to remove restriction
+    let max_disk_bytes = ::std::cmp::max(1_048_576, max_disk_bytes);
     let in_memory_limit: usize = ::std::cmp::max(sz, max_memory_bytes / sz);
     let q: private::Queue<T> = deque::Queue::with_capacity(in_memory_limit);
     if let Err(e) = private::clear_directory(&root) {

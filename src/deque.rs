@@ -92,12 +92,12 @@ where
                 must_wake_dequeuers = true;
             };
         }
-        return Ok(must_wake_dequeuers);
+        Ok(must_wake_dequeuers)
     }
 
     pub unsafe fn pop_back_no_block(&self, guard: &mut MutexGuard<BackGuardInner<S>>) -> Option<T> {
         if self.size.load(Ordering::Acquire) == 0 {
-            return None;
+            None
         } else {
             if ((*guard).offset - 1) < 0 {
                 (*guard).offset = (self.capacity - 1) as isize;
@@ -107,7 +107,7 @@ where
             let elem: Box<T> = Box::from_raw(*self.data.offset((*guard).offset) as *mut T);
             *self.data.offset((*guard).offset) = ptr::null_mut();
             self.size.fetch_sub(1, Ordering::Release);
-            return Some(*elem);
+            Some(*elem)
         }
     }
 
@@ -123,7 +123,7 @@ where
         (*guard).offset += 1;
         (*guard).offset %= self.capacity as isize;
         self.size.fetch_sub(1, Ordering::Release);
-        return *elem;
+        *elem
     }
 }
 

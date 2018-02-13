@@ -63,7 +63,7 @@ fn hopper_tst(input: HopperInput) -> () {
                 let builder = thread::Builder::new();
                 if let Ok(handler) = builder.spawn(move || {
                     for i in 0..chunk_size {
-                        thr_snd.send(i);
+                        let _ = thr_snd.send(i);
                     }
                 }) {
                     snd_jh.push(handler);
@@ -76,7 +76,7 @@ fn hopper_tst(input: HopperInput) -> () {
                 let mut collected = 0;
                 let mut rcv_iter = rcv.iter();
                 while collected < (chunk_size * total_senders) {
-                    if let Some(_) = rcv_iter.next() {
+                    if rcv_iter.next().is_some() {
                         collected += 1;
                     }
                 }

@@ -83,14 +83,10 @@ where
                             resource_type: PhantomData,
                         })
                     }
-                    Err(e) => {
-                        return Err(super::Error::IoError(e));
-                    }
+                    Err(e) => Err(super::Error::IoError(e)),
                 }
             }
-            Err(e) => {
-                return Err(super::Error::IoError(e));
-            }
+            Err(e) => Err(super::Error::IoError(e)),
         }
     }
 

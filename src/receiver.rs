@@ -58,14 +58,10 @@ where
                             disk_writes_to_read: 0,
                         })
                     }
-                    Err(e) => {
-                        return Err(super::Error::IoError(e));
-                    }
+                    Err(e) => Err(super::Error::IoError(e)),
                 }
             }
-            Err(e) => {
-                return Err(super::Error::IoError(e));
-            }
+            Err(e) => Err(super::Error::IoError(e)),
         }
     }
 
