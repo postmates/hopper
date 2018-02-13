@@ -154,10 +154,8 @@ where
     T: Serialize + DeserializeOwned + fmt::Debug,
 {
     let root = data_dir.join(name);
-    let snd_root = root.clone();
-    let rcv_root = root.clone();
     if !root.is_dir() {
-        match fs::create_dir_all(root) {
+        match fs::create_dir_all(root.clone()) {
             Ok(()) => {}
             Err(e) => {
                 return Err(Error::IoError(e));
@@ -170,8 +168,11 @@ where
                                                                      // issue to remove restriction
     let in_memory_limit: usize = ::std::cmp::max(sz, max_memory_bytes / sz);
     let q: private::Queue<T> = deque::Queue::with_capacity(in_memory_limit);
-    let sender = Sender::new(name, &snd_root, max_disk_bytes, q.clone())?;
-    let receiver = Receiver::new(&rcv_root, q)?;
+    if let Err(e) = private::clear_directory(&root) {
+        return Err(Error::IoError(e));
+    }
+    let receiver = Receiver::new(&root, q.clone())?;
+    let sender = Sender::new(name, &root, max_disk_bytes, q)?;
     Ok((sender, receiver))
 }
 

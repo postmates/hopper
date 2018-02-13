@@ -51,13 +51,10 @@ pub fn read_seq_num_min(data_dir: &Path) -> io::Result<usize> {
     Ok(min)
 }
 
-pub fn delete_all_but(data_dir: &Path, seq_num: usize) -> io::Result<()> {
+pub fn clear_directory(data_dir: &Path) -> io::Result<()> {
     for directory_entry in fs::read_dir(data_dir)? {
         let de = directory_entry?;
-        let id = de.file_name().to_str().unwrap().parse::<usize>().unwrap();
-        if id != seq_num {
-            fs::remove_file(de.path())?
-        }
+        fs::remove_file(de.path())?
     }
     Ok(())
 }
