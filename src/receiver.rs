@@ -2,7 +2,7 @@ use bincode::{deserialize_from, Infinite};
 use private;
 use byteorder::{BigEndian, ReadBytesExt};
 use serde::de::DeserializeOwned;
-use std::{fmt, fs};
+use std::fs;
 use std::io::{BufReader, ErrorKind, Read, Seek, SeekFrom};
 use std::iter::IntoIterator;
 use std::marker::PhantomData;
@@ -12,10 +12,7 @@ use flate2::read::DeflateDecoder;
 #[derive(Debug)]
 /// The 'receive' side of hopper, similar to
 /// [`std::sync::mpsc::Receiver`](https://doc.rust-lang.org/std/sync/mpsc/struct.Receiver.html).
-pub struct Receiver<T>
-where
-    T: fmt::Debug,
-{
+pub struct Receiver<T> {
     root: PathBuf,           // directory we store our queues in
     fp: BufReader<fs::File>, // active fp
     resource_type: PhantomData<T>,
@@ -25,7 +22,7 @@ where
 
 impl<T> Receiver<T>
 where
-    T: DeserializeOwned + fmt::Debug,
+    T: DeserializeOwned,
 {
     #[doc(hidden)]
     pub fn new(
@@ -39,11 +36,6 @@ where
         }
         match private::read_seq_num(data_dir) {
             Ok(seq_num) => {
-                // Remove all index files we've fast-forwarded over
-                //
-                // As the senders will restart with writes_to_read at 0, we're going to
-                // have to make sure that receiver is on the same page with regard to
-                // place on disk.
                 let log = data_dir.join(format!("{}", seq_num));
                 match fs::OpenOptions::new().read(true).open(log) {
                     Ok(mut fp) => {
@@ -134,14 +126,15 @@ where
     fn next_value(&mut self) -> Option<T> {
         // The receive loop
         //
-        // The receiver works by regularly attempting to read a payload from its
-        // current log file. In the event we hit EOF without detecting that the
-        // file is read-only, we swing around and try again. If a Sender thread
-        // has a bug and is unable to mark a file its finished with as read-only
-        // this _will_ cause a livelock situation. If the file _is_ read-only
-        // this is a signal from the senders that the file is no longer being
-        // written to. It's safe for the Receiver to declare the log done by
-        // deleting it and moving on to the next file.
+        // The receiver is two interlocked state machines. The in-memory state
+        // machine is done by calling `pop_front` on the in-memory deque, which
+        // blocks until there's an item available. If the item that comes back
+        // is a 'memory' placement we stay in the in-memory state machine. If
+        // disk, we switch machines. The disk state machine has a counter of how
+        // many items need to be read from disk. It's possible that disk reads
+        // will suffer transient failures -- think file-descriptor exhaustion --
+        // and so we only move out of disk back to memory state machine when the
+        // counter is fully exhausted.
         loop {
             if self.disk_writes_to_read == 0 {
                 match self.mem_buffer.pop_front() {
@@ -171,18 +164,18 @@ where
 }
 
 #[derive(Debug)]
-pub struct Iter<'a, T: 'a + DeserializeOwned + fmt::Debug> {
+pub struct Iter<'a, T: 'a + DeserializeOwned> {
     rx: &'a mut Receiver<T>,
 }
 
 #[derive(Debug)]
-pub struct IntoIter<T: DeserializeOwned + fmt::Debug> {
+pub struct IntoIter<T: DeserializeOwned> {
     rx: Receiver<T>,
 }
 
 impl<T> IntoIterator for Receiver<T>
 where
-    T: DeserializeOwned + fmt::Debug,
+    T: DeserializeOwned,
 {
     type Item = T;
     type IntoIter = IntoIter<T>;
@@ -194,7 +187,7 @@ where
 
 impl<'a, T> Iterator for Iter<'a, T>
 where
-    T: DeserializeOwned + fmt::Debug,
+    T: DeserializeOwned,
 {
     type Item = T;
 
@@ -205,7 +198,7 @@ where
 
 impl<T> Iterator for IntoIter<T>
 where
-    T: DeserializeOwned + fmt::Debug,
+    T: DeserializeOwned,
 {
     type Item = T;
 

@@ -8,20 +8,6 @@
 //! at need. The ambition here is to support mpsc style communication without
 //! allocating unbounded amounts of memory or dropping inputs on the floor.
 //!
-//! How does hopper work? Imagine that hopper's internal structure is laid out
-//! like a contiguous array:
-//!
-//! ```c
-//! [---------------|----------------|~~~~~~~~~~~. . .~~~~~~~~~~~~~~~~]
-//! 0               1024             2048
-//! ```
-//!
-//! Between the indicies of 0 and 1024 hopper stores items in-memory until they
-//! are retrieved. Above index 1024 items are paged out to disk. Items stored
-//! between index 1024 and 2048 are temporarily buffered in memory to allow a
-//! single page to disk once this buffer is full. This scheme fixes the memory
-//! burden of the system at the expense of disk IO.
-//!
 //! Hopper is intended to be used in situtations where your system cannot
 //! load-shed inputs and _must_ eventually process them. Hopper does page to
 //! disk but has the same durabilty guarantees as stdlib mpsc between restarts:
@@ -31,11 +17,10 @@
 //!
 //! Hopper's channel looks very much like a named pipe in Unix. You supply a
 //! name to either `channel_2` or `channel_with_max_bytes_3` and you push bytes
-//! in and out. The disk paging adds a complication. In private, the name
-//! supplied to the above two functions is used to create a directory under
+//! in and out. The disk paging adds a complication. The name supplied to the
+//! above two functions is used to create a directory under user-supplied
 //! `data_dir`. This directory gets filled up with monotonically increasing
-//! files in situations where the disk paging is in use. We'll treat this
-//! exclusively from here on.
+//! files.
 //!
 //! The on-disk structure look like so:
 //!
@@ -58,13 +43,13 @@
 //!
 //! ## Won't this fill up my disk?
 //!
-//! Maybe! Each Sender has a notion of the maximum bytes it may read--which you
-//! can set explicitly when creating a channel with
-//! `channel_with_max_bytes`--and once the Sender has gone over that limit it'll
-//! attempt to mark the queue file as read-only and create a new file. The
-//! Receiver is programmed to read its current queue file until it reaches EOF
-//! and finds the file is read-only, at which point it deletes the file--it is
-//! the only reader--and moves on to the next.
+//! Maybe! Each Sender has a notion of the maximum bytes that a queue file may
+//! consume--which you can set explicitly when creating a channel with
+//! `channel_with_explicit_capacity`--and once the Sender has gone over that
+//! limit it'll attempt to mark the queue file as read-only and create a new
+//! file. The Receiver is programmed to read its current queue file until it
+//! reaches EOF and, finding the file is read-only, removes the queue file and
+//! moves on to the next.
 //!
 //! If the Receiver is unable to keep up with the Senders then, oops, your disk
 //! will gradually fill up.
@@ -76,7 +61,7 @@
 //! [small atomic
 //! writes](https://stackoverflow.com/questions/32851672/is-overwriting-a-small-file-atomic-on-ext4)
 //! hopper limits itself to one exclusive Sender or one exclusive Receiver at a
-//! time. This potentially limits the concurrency of mpsc but maintains data
+//! time. This potentially limits the concurrency but maintains data
 //! integrity. We are open to improvements in this area.
 extern crate bincode;
 extern crate byteorder;
@@ -92,7 +77,7 @@ pub use self::receiver::Receiver;
 pub use self::sender::Sender;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-use std::{fmt, fs, io, mem};
+use std::{fs, io, mem};
 use std::path::Path;
 
 /// Defines the errors that hopper will bubble up
@@ -115,7 +100,9 @@ pub enum Error {
 /// [`std::sync::mpsc::channel`](https://doc.rust-lang.org/std/sync/mpsc/fn.channel.html)
 ///
 /// This function creates a Sender and Receiver pair with name `name` whose
-/// queue files are stored in `data_dir`. The Sender is clonable.
+/// queue files are stored in `data_dir`. The maximum number of bytes that will
+/// be stored in-memory is 1Mb and the maximum size of a queue file will be
+/// 100Mb. The Sender is clonable.
 ///
 /// # Example
 /// ```
@@ -130,7 +117,7 @@ pub enum Error {
 /// ```
 pub fn channel<T>(name: &str, data_dir: &Path) -> Result<(Sender<T>, Receiver<T>), Error>
 where
-    T: Serialize + DeserializeOwned + fmt::Debug,
+    T: Serialize + DeserializeOwned,
 {
     channel_with_explicit_capacity(name, data_dir, 1_048_576, 1_048_576 * 100)
 }
@@ -139,13 +126,10 @@ where
 /// [`std::sync::mpsc::channel`](https://doc.rust-lang.org/std/sync/mpsc/fn.channel.html)
 ///
 /// This function creates a Sender and Receiver pair with name `name` whose
-/// queue files are stored in `data_dir`. The Sender is clonable.
-///
-/// This function gives control to the user over the maximum size of hopper's
-/// queue files as `max_disk_bytes`. The user may specify any value for
-/// `max_disk_bytes` but the minimum that will be used in practice is
-/// 1Mb. Likewise the user may control how many bytes hopper holds in memory
-/// with `max_memory_bytes`. The minium is `std::mem::size_of::<T>()`.
+/// queue files are stored in `data_dir`. The maximum number of bytes that will
+/// be stored in-memory are `max(max_memory_bytes, size_of(T))` and the maximum
+/// size of a queue file will be `max(max_disk_bytes, 1Mb)`. The Sender is
+/// clonable.
 pub fn channel_with_explicit_capacity<T>(
     name: &str,
     data_dir: &Path,
@@ -153,7 +137,7 @@ pub fn channel_with_explicit_capacity<T>(
     max_disk_bytes: usize,
 ) -> Result<(Sender<T>, Receiver<T>), Error>
 where
-    T: Serialize + DeserializeOwned + fmt::Debug,
+    T: Serialize + DeserializeOwned,
 {
     let root = data_dir.join(name);
     if !root.is_dir() {

@@ -2,7 +2,7 @@ use bincode::{serialize_into, Infinite};
 use byteorder::{BigEndian, WriteBytesExt};
 use private;
 use serde::{Deserialize, Serialize};
-use std::{fmt, fs};
+use std::fs;
 use std::sync::MutexGuard;
 use deque::BackGuardInner;
 use std::io::{BufWriter, Write};
@@ -14,10 +14,7 @@ use deque;
 
 #[derive(Debug)]
 /// The 'send' side of hopper, similar to `std::sync::mpsc::Sender`.
-pub struct Sender<T>
-where
-    T: fmt::Debug,
-{
+pub struct Sender<T> {
     name: String,
     root: PathBuf, // directory we store our queues in
     max_disk_bytes: usize,
@@ -35,7 +32,7 @@ pub struct SenderSync {
 
 impl<'de, T> Clone for Sender<T>
 where
-    T: Serialize + Deserialize<'de> + fmt::Debug,
+    T: Serialize + Deserialize<'de>,
 {
     fn clone(&self) -> Sender<T> {
         Sender {
@@ -50,7 +47,7 @@ where
 
 impl<T> Sender<T>
 where
-    T: Serialize + fmt::Debug,
+    T: Serialize,
 {
     #[doc(hidden)]
     pub fn new<S>(
@@ -60,7 +57,7 @@ where
         mem_buffer: private::Queue<T>,
     ) -> Result<Sender<T>, super::Error>
     where
-        S: Into<String> + fmt::Display,
+        S: Into<String>,
     {
         let setup_mem_buffer = mem_buffer.clone(); // clone is cheeeeeap
         let mut guard = setup_mem_buffer.lock_back();
@@ -101,20 +98,17 @@ where
         serialize_into(&mut e, &event, Infinite).expect("could not serialize");
         buf = e.finish().unwrap();
         let payload_len = buf.len();
-        // If the individual sender writes enough to go over the max
-        // we mark the file read-only--which will help the receiver
-        // to decide it has hit the end of its log file--and create
-        // a new log file.
+        // If the individual sender writes enough to go over the max we mark the
+        // file read-only--which will help the receiver to decide it has hit the
+        // end of its log file--and create a new log file.
         let bytes_written =
             (*guard).inner.bytes_written + payload_len + ::std::mem::size_of::<u64>();
         if (bytes_written > self.max_disk_bytes) || (*guard).inner.sender_fp.is_none() {
-            // Once we've gone over the write limit for our current
-            // file or find that we've gotten behind the current
-            // queue file we need to seek forward to find our place
-            // in the space of queue files. We mark our current file
-            // read-only--there's some possibility that this will be
-            // done redundantly, but that's okay--and then read the
-            // current sender_seq_num to get up to date.
+            // Once we've gone over the write limit for our current file or find
+            // that we've gotten behind the current queue file we need to seek
+            // forward to find our place in the space of queue files. We mark
+            // our current file read-only and then bump sender_seq_num to get up
+            // to date.
             let _ = fs::metadata(&(*guard).inner.path).map(|p| {
                 let mut permissions = p.permissions();
                 permissions.set_readonly(true);
@@ -166,6 +160,31 @@ where
     ///  [u8] payload
     ///
     pub fn send(&mut self, event: T) -> Result<(), (T, super::Error)> {
+        // Welcome. Let me tell you about the time I fell off the toilet, hit my
+        // head and when I woke up I saw this! ~passes knapkin drawing of the
+        // flux capacitor over to you~
+        //
+        // This function pushes `event` into an in-memory deque unless that
+        // deque is full. Previous versions of hopper had a series of
+        // complicated flags and a monolock to coordinate with the Receiver to
+        // make sure that the `event` would eventually make it to disk or be
+        // stuffed into memory and order would be preserved throughout. This was
+        // goofy.
+        //
+        // What struck me, noodling about how to keep order, was that if I
+        // dropped all the flags and just used the data itself to signal where
+        // and in what order we needed to read we'd be in business. Every
+        // `event` gets wrapped in a `private::Placement` that indicates to the
+        // Receiver if it's in-memory -- in which case, it's right there -- or
+        // how many things are on disk needing to be read.
+        //
+        // Dang!
+        //
+        // We start off this function assuming that we can place the event into
+        // memory and, failing that, then pop the last pushed item off the
+        // deque, combine that and this event into a disk placement, write to
+        // disk, and then push the disk placement onto the deque. Order is
+        // preserved, a couple of things go to disk and we're capped on memory.
         let mut back_guard = self.mem_buffer.lock_back();
         let placed_event = private::Placement::Memory(event);
         match self.mem_buffer.push_back(placed_event, &mut back_guard) {
@@ -181,6 +200,11 @@ where
                 match self.mem_buffer.pop_back_no_block(&mut back_guard) {
                     None => {
                         // receiver cleared us out
+                        //
+                        // It's possible between the time we've failed to write
+                        // and then try to dequeue the last entry that the
+                        // receiver has come through and pop_front'ed
+                        // everything. In that case, we push_back and move on.
                         match self.mem_buffer.push_back(placed_event, &mut back_guard) {
                             Ok(must_wake_receiver) => {
                                 if must_wake_receiver {
@@ -194,6 +218,12 @@ where
                     }
                     Some(inner) => {
                         let mut wrote_to_disk = 0;
+                        // We know we have to create a disk placement here. It's
+                        // possible that the previous item will be a disk
+                        // placement -- in which case, we just write and bump
+                        // the counter -- or is a memory placement and we have
+                        // to write both to disk and create a disk placement to
+                        // reflect that.
                         match inner {
                             private::Placement::Memory(frnt) => {
                                 self.write_to_disk(frnt, &mut back_guard)?;

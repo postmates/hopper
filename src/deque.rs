@@ -1,15 +1,30 @@
 // Indebted to "The Art of Multiprocessor Programming"
+//
+// Welcome friends. This module implements a doubly ended queue that allows
+// concurrent access to the back and front of the queue. This is used to give
+// Sender and Receiver more or less uncoordinated enqueue/dequeue
+// operations. The underlying structure is a contiguous allocation operated like
+// a ring buffer. When the buffer fills up enqueue fails. The only coordination
+// that does happen is through a condvar, waking up a pop_front operation that
+// blocks when there's no data to pop.
+//
+// The exact API is a little weird, which we'll get into below. Just keep in
+// mind: it's a contiguous block of memory with some fancy bits tacked on.
 use std::sync::{Condvar, Mutex, MutexGuard};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::{fmt, mem, ptr};
+use std::{mem, ptr, sync};
 
-unsafe impl<T: fmt::Debug, S> Send for Queue<T, S> {}
-unsafe impl<T: fmt::Debug, S> Sync for Queue<T, S> {}
+unsafe impl<T, S> Send for Queue<T, S> {}
+unsafe impl<T, S> Sync for Queue<T, S> {}
 
-struct InnerQueue<T, S>
-where
-    T: fmt::Debug,
-{
+// This is InnerQueue. You can see in our self-derived Send / Sync that there's
+// an actual Queue somewhere below. What gives?
+//
+// InnerQueue is the real deal. This is where the data lives, this is where all
+// the locks live. When the user creates a Queue this InnerQueue is allocated on
+// the heap and then that's it, each subsequent clone of Queue stores a pointer
+// to InnerQueue.
+struct InnerQueue<T, S> {
     capacity: usize,
     data: *mut (*const T),
     size: AtomicUsize,
@@ -18,11 +33,36 @@ where
     not_empty: Condvar,
 }
 
+// There are two distinct things in InnerQueue that are pointers and we've got
+// to be careful about deallocation. Namely, the contiguous array is an array of
+// pointers. This is... well, less than ideal for memory locality but that's a
+// thing for another time. Anyhow.
+impl<T, S> Drop for InnerQueue<T, S> {
+    fn drop(&mut self) {
+        unsafe {
+            // Turn self.data back into a droppable thing...
+            let mut data =
+                Vec::from_raw_parts(self.data, self.size.load(Ordering::Acquire), self.capacity);
+            // turn its insides into droppable things...
+            for elem in data.drain(..) {
+                drop(Box::from_raw(elem as *mut T));
+            }
+            // drop the deflated self.data.
+            drop(data);
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub enum Error<T> {
     Full(T),
 }
 
+// FrontGuardInner and BackGuardInner are the insides of the front and back
+// locks. What's curious about BackGuardInner is that you can smuggle data
+// inside of it. This is driven _entirely_ by the needs of Sender, which has to
+// coordinate the sender threads. There's only ever one Receiver and thus no
+// need for coordination.
 #[derive(Debug, Clone, Copy)]
 pub struct FrontGuardInner {
     offset: isize,
@@ -34,9 +74,13 @@ pub struct BackGuardInner<S> {
     pub inner: S,
 }
 
+// You'll notice that InnerQueue functions tend to take a MutexGuard as an
+// argument, rather than managing the mutex by themselves. This is done because
+// upstream in Sender we need to be sure that _multiple_ operations to Queue
+// happen isolated from other Senders, the Receiver on occasion. It's a little
+// tedious but since Rust mutex is tied to scope what else are you gonna do?
 impl<T, S> InnerQueue<T, S>
 where
-    T: fmt::Debug,
     S: ::std::default::Default,
 {
     pub fn with_capacity(capacity: usize) -> InnerQueue<T, S> {
@@ -69,11 +113,11 @@ where
     }
 
     pub fn lock_back(&self) -> MutexGuard<BackGuardInner<S>> {
-        self.back_lock.lock().expect("enq lock poisoned")
+        self.back_lock.lock().expect("back lock poisoned")
     }
 
     pub fn lock_front(&self) -> MutexGuard<FrontGuardInner> {
-        self.front_lock.lock().expect("deq lock poisoned")
+        self.front_lock.lock().expect("front lock poisoned")
     }
 
     pub unsafe fn push_back(
@@ -111,12 +155,12 @@ where
         }
     }
 
-    /// WARNING do not call this if deq_lock has been locked by the same thread
-    /// you WILL deadlock and have a bad time
     pub unsafe fn pop_front(&self) -> T {
-        let mut guard = self.front_lock.lock().expect("deq lock poisoned");
+        let mut guard = self.front_lock.lock().expect("front lock poisoned");
         while self.size.load(Ordering::Acquire) == 0 {
-            guard = self.not_empty.wait(guard).expect("oops could not wait deq");
+            guard = self.not_empty
+                .wait(guard)
+                .expect("oops could not wait pop_front");
         }
         let elem: Box<T> = Box::from_raw(*self.data.offset((*guard).offset) as *mut T);
         *self.data.offset((*guard).offset) = ptr::null_mut();
@@ -127,52 +171,51 @@ where
     }
 }
 
-#[derive(Debug)]
-pub struct Queue<T, S>
-where
-    T: fmt::Debug,
-{
-    inner: *mut InnerQueue<T, S>,
+pub struct Queue<T, S> {
+    inner: sync::Arc<InnerQueue<T, S>>,
 }
 
-impl<T, S> Clone for Queue<T, S>
-where
-    T: fmt::Debug,
-{
-    fn clone(&self) -> Queue<T, S> {
-        Queue { inner: self.inner }
+impl<T, S> ::std::fmt::Debug for Queue<T, S> {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result {
+        write!(f, "sry")
     }
 }
 
-impl<T, S: ::std::default::Default> Queue<T, S>
-where
-    T: fmt::Debug,
-{
+impl<T, S> Clone for Queue<T, S> {
+    fn clone(&self) -> Queue<T, S> {
+        Queue {
+            inner: sync::Arc::clone(&self.inner),
+        }
+    }
+}
+
+impl<T, S: ::std::default::Default> Queue<T, S> {
     pub fn with_capacity(capacity: usize) -> Queue<T, S> {
-        let inner = Box::into_raw(Box::new(InnerQueue::with_capacity(capacity)));
+        let inner = sync::Arc::new(InnerQueue::with_capacity(capacity));
         Queue { inner: inner }
     }
 
     pub fn capacity(&self) -> usize {
-        unsafe { (*self.inner).capacity() }
+        (*self.inner).capacity()
     }
 
     pub fn size(&self) -> usize {
-        unsafe { (*self.inner).size() }
+        (*self.inner).size()
     }
 
     pub fn lock_back(&self) -> MutexGuard<BackGuardInner<S>> {
-        unsafe { (*self.inner).lock_back() }
+        (*self.inner).lock_back()
     }
 
     pub fn lock_front(&self) -> MutexGuard<FrontGuardInner> {
-        unsafe { (*self.inner).lock_front() }
+        (*self.inner).lock_front()
     }
 
-    /// Enqueue a value
+    /// Push an element onto the back of the queue.
     ///
-    /// If an error is returned there was not enough space in the memory
-    /// buffer. Caller is responsible for coping.
+    /// This function will return an error if the InnerQueue holds `capacity`
+    /// elements. The passed `T` will be smuggled out through the error,
+    /// returning ownership to the caller.
     ///
     /// If return is an okay _and_ the value is true the caller is responsible
     /// for calling notify_not_empty OR A DEADLOCK WILL HAPPEN. Thank you and
@@ -185,11 +228,17 @@ where
         unsafe { (*self.inner).push_back(elem, &mut guard) }
     }
 
-    /// Pops the back but DOES NOT shift the offset
+    /// Pop an element from the back of the queue
     ///
-    /// pop_back is probably a bad name. We remove the item under the current
-    /// offset but assume that the spot will be used again, eg in an overflow
-    /// situation.
+    /// This function WILL NOT block if there are no elements to be popped from
+    /// the back. Compare this to pop_front's behaviour of blocking until an
+    /// element shows up. There is no blocking pop_back, unless someone has
+    /// written one and this comment has gone out of date.
+    ///
+    /// Note this function does remove the item under the current offset but
+    /// does not shift the offset on the assumption that the spot will be used
+    /// again immediately. You SHOULD REALLY call push_back after using this
+    /// function or wacky things will happen.
     pub fn pop_back_no_block(&self, mut guard: &mut MutexGuard<BackGuardInner<S>>) -> Option<T> {
         unsafe { (*self.inner).pop_back_no_block(&mut guard) }
     }
@@ -198,9 +247,14 @@ where
         // guard is not used here but is required to verifiy that 1. a deadlock
         // situation has not happened and 2. we're not doing a notify without
         // holding the lock.
-        unsafe { (*self.inner).not_empty.notify_all() }
+        (*self.inner).not_empty.notify_all()
     }
 
+    /// Pop an element from the front of the queue
+    ///
+    /// This function WILL block if there are no elements to be popped from the
+    /// front. This block will take no CPU time and the caller thread will only
+    /// wake once an element has been pushed onto the queue.
     pub fn pop_front(&mut self) -> T {
         unsafe { (*self.inner).pop_front() }
     }
