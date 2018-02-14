@@ -12,7 +12,7 @@
 // mind: it's a contiguous block of memory with some fancy bits tacked on.
 use std::sync::{Condvar, Mutex, MutexGuard};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::{mem, ptr, sync};
+use std::{mem, sync};
 
 unsafe impl<T, S> Send for Queue<T, S> {}
 unsafe impl<T, S> Sync for Queue<T, S> {}
@@ -26,7 +26,7 @@ unsafe impl<T, S> Sync for Queue<T, S> {}
 // to InnerQueue.
 struct InnerQueue<T, S> {
     capacity: usize,
-    data: *mut (*const T),
+    data: *mut Option<T>,
     size: AtomicUsize,
     back_lock: Mutex<BackGuardInner<S>>,
     front_lock: Mutex<FrontGuardInner>,
@@ -41,12 +41,8 @@ impl<T, S> Drop for InnerQueue<T, S> {
     fn drop(&mut self) {
         unsafe {
             // Turn self.data back into a droppable thing...
-            let mut data =
+            let data =
                 Vec::from_raw_parts(self.data, self.size.load(Ordering::Acquire), self.capacity);
-            // turn its insides into droppable things...
-            for elem in data.drain(..) {
-                drop(Box::from_raw(elem as *mut T));
-            }
             // drop the deflated self.data.
             drop(data);
         }
@@ -85,9 +81,10 @@ where
 {
     pub fn with_capacity(capacity: usize) -> InnerQueue<T, S> {
         assert!(capacity > 0);
-        let mut data: Vec<*const T> = Vec::with_capacity(capacity);
+        // println!("{:<2}CAPACITY: {}", "", capacity);
+        let mut data: Vec<Option<T>> = Vec::with_capacity(capacity);
         for _ in 0..capacity {
-            data.push(ptr::null());
+            data.push(None);
         }
         let raw_data = (&mut data).as_mut_ptr();
         mem::forget(data);
@@ -125,21 +122,28 @@ where
         elem: T,
         guard: &mut MutexGuard<BackGuardInner<S>>,
     ) -> Result<bool, Error<T>> {
+        // println!("{:<2}PUSH_BACK[{}]", "", (*guard).offset);
         let mut must_wake_dequeuers = false;
-        if !(*self.data.offset((*guard).offset)).is_null() {
+        if (*self.data.offset((*guard).offset)).is_some() {
+            // println!("{:<4}FULL", "");
             return Err(Error::Full(elem));
         } else {
-            *self.data.offset((*guard).offset) = Box::into_raw(Box::new(elem));
+            *self.data.offset((*guard).offset) = Some(elem);
             (*guard).offset += 1;
             (*guard).offset %= self.capacity as isize;
-            if self.size.fetch_add(1, Ordering::Release) == 0 {
+            let seen_size = self.size.fetch_add(1, Ordering::Release);
+            if seen_size == 0 {
+                // println!("{:<4}WAKE_DEQUEUERS", "");
                 must_wake_dequeuers = true;
-            };
+            } else {
+                // println!("{:<4}SEEN_SIZE {}", "", seen_size);
+            }
         }
         Ok(must_wake_dequeuers)
     }
 
     pub unsafe fn pop_back_no_block(&self, guard: &mut MutexGuard<BackGuardInner<S>>) -> Option<T> {
+        // println!("{:<2}POP_BACK_NO_BLOCK[{}]", "", (*guard).offset);
         if self.size.load(Ordering::Acquire) == 0 {
             None
         } else {
@@ -148,26 +152,36 @@ where
             } else {
                 (*guard).offset -= 1;
             };
-            let elem: Box<T> = Box::from_raw(*self.data.offset((*guard).offset) as *mut T);
-            *self.data.offset((*guard).offset) = ptr::null_mut();
+            let res = mem::replace(&mut *self.data.offset((*guard).offset), None);
             self.size.fetch_sub(1, Ordering::Release);
-            Some(*elem)
+            res
         }
     }
 
     pub unsafe fn pop_front(&self) -> T {
-        let mut guard = self.front_lock.lock().expect("front lock poisoned");
-        while self.size.load(Ordering::Acquire) == 0 {
-            guard = self.not_empty
-                .wait(guard)
-                .expect("oops could not wait pop_front");
+        loop {
+            let mut guard = self.front_lock.lock().expect("front lock poisoned");
+            while self.size.load(Ordering::Acquire) == 0 {
+                // println!("{:<4}BLOCK POP_FRONT", "");
+                guard = self.not_empty
+                    .wait(guard)
+                    .expect("oops could not wait pop_front");
+            }
+            // println!("{:<2}POP_FRONT[{}]", "", (*guard).offset);
+            let elem: Option<T> = mem::replace(&mut *self.data.offset((*guard).offset), None);
+            if elem.is_none() {
+                // It's possible that pop_back_no_block will have been called
+                // between the exit from size.load loop and our mem::replace. If
+                // that's the case, we have to try again.
+                continue;
+            }
+            assert!(elem.is_some());
+            *self.data.offset((*guard).offset) = None;
+            (*guard).offset += 1;
+            (*guard).offset %= self.capacity as isize;
+            self.size.fetch_sub(1, Ordering::Release);
+            return elem.unwrap();
         }
-        let elem: Box<T> = Box::from_raw(*self.data.offset((*guard).offset) as *mut T);
-        *self.data.offset((*guard).offset) = ptr::null_mut();
-        (*guard).offset += 1;
-        (*guard).offset %= self.capacity as isize;
-        self.size.fetch_sub(1, Ordering::Release);
-        *elem
     }
 }
 

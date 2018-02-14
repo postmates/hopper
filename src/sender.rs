@@ -2,7 +2,7 @@ use bincode::{serialize_into, Infinite};
 use byteorder::{BigEndian, WriteBytesExt};
 use private;
 use serde::{Deserialize, Serialize};
-use std::fs;
+use std::{fmt, fs};
 use std::sync::MutexGuard;
 use deque::BackGuardInner;
 use std::io::{BufWriter, Write};
@@ -47,7 +47,7 @@ where
 
 impl<T> Sender<T>
 where
-    T: Serialize,
+    T: Serialize + fmt::Debug,
 {
     #[doc(hidden)]
     pub fn new<S>(
@@ -92,6 +92,7 @@ where
         event: T,
         guard: &mut MutexGuard<BackGuardInner<SenderSync>>,
     ) -> Result<(), (T, super::Error)> {
+        // println!("WRITE_TO_DISK: {:?}", event);
         let mut buf: Vec<u8> = Vec::with_capacity(64);
         buf.clear();
         let mut e = DeflateEncoder::new(buf, Compression::fast());

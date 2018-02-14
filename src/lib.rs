@@ -77,7 +77,7 @@ pub use self::receiver::Receiver;
 pub use self::sender::Sender;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-use std::{fs, io, mem};
+use std::{fmt, fs, io, mem};
 use std::path::Path;
 
 /// Defines the errors that hopper will bubble up
@@ -117,7 +117,7 @@ pub enum Error {
 /// ```
 pub fn channel<T>(name: &str, data_dir: &Path) -> Result<(Sender<T>, Receiver<T>), Error>
 where
-    T: Serialize + DeserializeOwned,
+    T: Serialize + DeserializeOwned + fmt::Debug,
 {
     channel_with_explicit_capacity(name, data_dir, 1_048_576, 1_048_576 * 100)
 }
@@ -137,7 +137,7 @@ pub fn channel_with_explicit_capacity<T>(
     max_disk_bytes: usize,
 ) -> Result<(Sender<T>, Receiver<T>), Error>
 where
-    T: Serialize + DeserializeOwned,
+    T: Serialize + DeserializeOwned + fmt::Debug,
 {
     let root = data_dir.join(name);
     if !root.is_dir() {
@@ -150,8 +150,8 @@ where
     }
     let sz = mem::size_of::<T>();
     let max_disk_bytes = ::std::cmp::max(1_048_576, max_disk_bytes);
-    let in_memory_limit: usize = ::std::cmp::max(sz, max_memory_bytes / sz);
-    let q: private::Queue<T> = deque::Queue::with_capacity(in_memory_limit);
+    let total_memory_limit: usize = ::std::cmp::max(1, max_memory_bytes / sz);
+    let q: private::Queue<T> = deque::Queue::with_capacity(total_memory_limit);
     if let Err(e) = private::clear_directory(&root) {
         return Err(Error::IoError(e));
     }
@@ -216,10 +216,6 @@ mod test {
         }
         QuickCheck::new().quickcheck(rnd_trip as fn(usize, usize, Vec<Vec<u32>>) -> TestResult);
     }
-
-    // TODO
-    // - Drop for deque
-    // - no TODO in the codebase
 
     #[test]
     fn multi_thread_concurrent_snd_and_rcv_round_trip() {
@@ -318,6 +314,7 @@ mod test {
                 if let Ok(snd_jh) = builder.spawn(move || {
                     for i in 0..total_vals {
                         loop {
+                            // println!("SEND: {}", i);
                             if snd.send(i).is_ok() {
                                 break;
                             }
@@ -332,6 +329,7 @@ mod test {
                             let mut attempts = 0;
                             loop {
                                 if let Some(rcvd) = rcv_iter.next() {
+                                    // println!("RECV: {}", rcvd);
                                     debug_assert_eq!(
                                         cur, rcvd,
                                         "FAILED TO GET ALL IN ORDER: {:?}",
@@ -353,6 +351,19 @@ mod test {
             }
         }
         true
+    }
+
+    #[test]
+    fn explicit_single_sender_single_rcv_round_trip() {
+        let mut loops = 0;
+        loop {
+            // println!("\n\n\nLOOP: {}", loops);
+            assert!(single_sender_single_rcv_round_trip_exp(8, 8, 2));
+            loops += 1;
+            if loops > 1_000_000 {
+                break;
+            }
+        }
     }
 
     #[test]
