@@ -212,7 +212,7 @@ mod test {
                 }
                 // pull the rest of the elements
                 for i in 1..total_elems {
-                    // // println!("RECV: {}", i);
+                    // println!("RECV: {}", i);
                     // the +1 is for the unflushed item
                     let mut attempts = 0;
                     loop {
@@ -341,29 +341,31 @@ mod test {
         true
     }
 
-    // #[test]
-    // fn explicit_multi_thread_concurrent_snd_and_rcv_round_trip() {
-    //     let total_senders = 10;
-    //     let in_memory_bytes = 50;
-    //     let disk_bytes = 10;
-    //     let vals = vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
+    #[test]
+    fn explicit_multi_thread_concurrent_snd_and_rcv_round_trip() {
+        let total_senders = 10;
+        let in_memory_bytes = 50;
+        let disk_bytes = 10;
+        let vals = vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
 
-    //     let mut loops = 0;
-    //     loop {
-    //         // println!("\n\n\nLOOP: {}", loops);
-    //         assert!(multi_thread_concurrent_snd_and_rcv_round_trip_exp(
-    //             total_senders,
-    //             in_memory_bytes,
-    //             disk_bytes,
-    //             vals.clone(),
-    //         ));
-    //         loops += 1;
-    //         if loops > 1_000_000 {
-    //             break;
-    //         }
-    //         thread::sleep(::std::time::Duration::from_millis(1));
-    //     }
-    // }
+        let mut loops = 0;
+        loop {
+            if loops % 100 == 0 {
+                println!("LOOP: {}", loops);
+            }
+            assert!(multi_thread_concurrent_snd_and_rcv_round_trip_exp(
+                total_senders,
+                in_memory_bytes,
+                disk_bytes,
+                vals.clone(),
+            ));
+            loops += 1;
+            if loops > 2_500 {
+                break;
+            }
+            thread::sleep(::std::time::Duration::from_millis(1));
+        }
+    }
 
     #[test]
     fn multi_thread_concurrent_snd_and_rcv_round_trip() {
@@ -456,22 +458,21 @@ mod test {
         true
     }
 
-    // #[test]
-    // fn explicit_single_sender_single_rcv_round_trip() {
-    //     let mut loops = 0;
-    //     loop {
-    //         // // println!("\n\n\nLOOP: {}", loops);
-    //         // if loops % 1000 == 0 {
-    //         //     // println!("LOOP {}", loops);
-    //         // }
-    //         assert!(single_sender_single_rcv_round_trip_exp(8, 8, 5));
-    //         loops += 1;
-    //         if loops > 1_000_000 {
-    //             break;
-    //         }
-    //         thread::sleep(::std::time::Duration::from_millis(1));
-    //     }
-    // }
+    #[test]
+    fn explicit_single_sender_single_rcv_round_trip() {
+        let mut loops = 0;
+        loop {
+            if loops % 100 == 0 {
+                println!("LOOP: {}", loops);
+            }
+            assert!(single_sender_single_rcv_round_trip_exp(8, 8, 5));
+            loops += 1;
+            if loops > 2_500 {
+                break;
+            }
+            thread::sleep(::std::time::Duration::from_millis(1));
+        }
+    }
 
     #[test]
     fn single_sender_single_rcv_round_trip() {
