@@ -82,7 +82,7 @@ where
 {
     pub fn with_capacity(capacity: usize) -> InnerQueue<T, S> {
         assert!(capacity > 0);
-        println!("{:<2}CAPACITY: {}", "", capacity);
+        // println!("{:<2}CAPACITY: {}", "", capacity);
         let mut data: Vec<Option<T>> = Vec::with_capacity(capacity);
         for _ in 0..capacity {
             data.push(None);
@@ -123,12 +123,12 @@ where
         elem: T,
         guard: &mut MutexGuard<BackGuardInner<S>>,
     ) -> Result<bool, Error<T>> {
-        println!("{:<2}PUSH_BACK[{}] <- {:?}", "", (*guard).offset, elem);
+        // println!("{:<2}PUSH_BACK[{}] <- {:?}", "", (*guard).offset, elem);
         let mut must_wake_dequeuers = false;
         let cur_size = self.size.load(Ordering::Acquire);
-        println!("{:<3}PUSH_BACK CURRENT_SIZE {}", "", cur_size);
+        // println!("{:<3}PUSH_BACK CURRENT_SIZE {}", "", cur_size);
         if cur_size == self.capacity {
-            println!("{:<4}FULL", "");
+            // println!("{:<4}FULL", "");
             return Err(Error::Full(elem));
         } else {
             assert!((*self.data.offset((*guard).offset)).is_none());
@@ -145,19 +145,19 @@ where
     pub unsafe fn pop_front(&self) -> T {
         let mut guard = self.front_lock.lock().expect("front lock poisoned");
         while self.size.load(Ordering::Acquire) == 0 {
-            println!("{:<4}BLOCK POP_FRONT", "");
+            // println!("{:<4}BLOCK POP_FRONT", "");
             guard = self.not_empty
                 .wait(guard)
                 .expect("oops could not wait pop_front");
         }
         let elem: Option<T> = mem::replace(&mut *self.data.offset((*guard).offset), None);
-        println!("{:<2}POP_FRONT[{}] -> {:?}", "", (*guard).offset, elem);
+        // println!("{:<2}POP_FRONT[{}] -> {:?}", "", (*guard).offset, elem);
         assert!(elem.is_some());
         *self.data.offset((*guard).offset) = None;
         (*guard).offset += 1;
         (*guard).offset %= self.capacity as isize;
         let prev_size = self.size.fetch_sub(1, Ordering::Release);
-        println!("{:<3}POP_FRONT PREVIOUS SIZE: {}", "", prev_size);
+        // println!("{:<3}POP_FRONT PREVIOUS SIZE: {}", "", prev_size);
         return elem.unwrap();
     }
 }

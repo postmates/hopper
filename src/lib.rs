@@ -172,7 +172,7 @@ mod test {
     use std::{mem, thread};
 
     fn round_trip_exp(in_memory_limit: usize, max_bytes: usize, total_elems: usize) -> bool {
-        // println!(
+        // // println!(
         //     "IN_MEMORY_LIMIT: {}, MAX_BYTES: {}, TOTAL_ELEMS: {}",
         //     in_memory_limit, max_bytes, total_elems
         // );
@@ -212,7 +212,7 @@ mod test {
                 }
                 // pull the rest of the elements
                 for i in 1..total_elems {
-                    // println!("RECV: {}", i);
+                    // // println!("RECV: {}", i);
                     // the +1 is for the unflushed item
                     let mut attempts = 0;
                     loop {
@@ -244,7 +244,7 @@ mod test {
     #[test]
     fn round_trip() {
         fn inner(in_memory_limit: usize, max_bytes: usize, total_elems: usize) -> TestResult {
-            // println!(
+            // // println!(
             //     "IN_MEMORY_LIMIT: {}, MAX_BYTES: {}, TOTAL_ELEMS: {}",
             //     in_memory_limit, max_bytes, total_elems
             // );
@@ -276,7 +276,7 @@ mod test {
                     let chunk = chunk.to_vec();
                     snd_jh.push(thread::spawn(move || {
                         let mut queued = Vec::new();
-                        println!("CHUNK: {:?}", chunk);
+                        // println!("CHUNK: {:?}", chunk);
                         for mut ev in chunk {
                             loop {
                                 match thr_snd.send(ev) {
@@ -316,7 +316,7 @@ mod test {
                                     assert!(attempts < 10_000);
                                 }
                                 Some(res) => {
-                                    println!("RECVD: {:?}", res);
+                                    // println!("RECVD: {:?}", res);
                                     collected.push(res);
                                     break;
                                 }
@@ -341,29 +341,29 @@ mod test {
         true
     }
 
-    #[test]
-    fn explicit_multi_thread_concurrent_snd_and_rcv_round_trip() {
-        let total_senders = 10;
-        let in_memory_bytes = 50;
-        let disk_bytes = 10;
-        let vals = vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
+    // #[test]
+    // fn explicit_multi_thread_concurrent_snd_and_rcv_round_trip() {
+    //     let total_senders = 10;
+    //     let in_memory_bytes = 50;
+    //     let disk_bytes = 10;
+    //     let vals = vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
 
-        let mut loops = 0;
-        loop {
-            println!("\n\n\nLOOP: {}", loops);
-            assert!(multi_thread_concurrent_snd_and_rcv_round_trip_exp(
-                total_senders,
-                in_memory_bytes,
-                disk_bytes,
-                vals.clone(),
-            ));
-            loops += 1;
-            if loops > 1_000_000 {
-                break;
-            }
-            thread::sleep(::std::time::Duration::from_millis(1));
-        }
-    }
+    //     let mut loops = 0;
+    //     loop {
+    //         // println!("\n\n\nLOOP: {}", loops);
+    //         assert!(multi_thread_concurrent_snd_and_rcv_round_trip_exp(
+    //             total_senders,
+    //             in_memory_bytes,
+    //             disk_bytes,
+    //             vals.clone(),
+    //         ));
+    //         loops += 1;
+    //         if loops > 1_000_000 {
+    //             break;
+    //         }
+    //         thread::sleep(::std::time::Duration::from_millis(1));
+    //     }
+    // }
 
     #[test]
     fn multi_thread_concurrent_snd_and_rcv_round_trip() {
@@ -380,10 +380,10 @@ mod test {
             {
                 return TestResult::discard();
             }
-            println!(
-                "TOTAL_SENDERS: {}, IN_MEMORY_BYTES: {}, DISK_BYTES: {}, VALS: {:?}",
-                total_senders, in_memory_bytes, disk_bytes, vals
-            );
+            // println!(
+            //     "TOTAL_SENDERS: {}, IN_MEMORY_BYTES: {}, DISK_BYTES: {}, VALS: {:?}",
+            //     total_senders, in_memory_bytes, disk_bytes, vals
+            // );
             TestResult::from_bool(multi_thread_concurrent_snd_and_rcv_round_trip_exp(
                 total_senders,
                 in_memory_bytes,
@@ -407,7 +407,7 @@ mod test {
                 if let Ok(snd_jh) = builder.spawn(move || {
                     for i in 0..total_vals {
                         loop {
-                            // println!("SEND: {}", i);
+                            // // println!("SEND: {}", i);
                             if snd.send(i).is_ok() {
                                 break;
                             }
@@ -431,7 +431,7 @@ mod test {
                             let mut attempts = 0;
                             loop {
                                 if let Some(rcvd) = rcv_iter.next() {
-                                    // println!("SINGLE_SENDER RECV: {}", rcvd);
+                                    // // println!("SINGLE_SENDER RECV: {}", rcvd);
                                     debug_assert_eq!(
                                         cur, rcvd,
                                         "FAILED TO GET ALL IN ORDER: {:?}",
@@ -445,7 +445,7 @@ mod test {
                                 }
                             }
                         }
-                        // println!("RECEIVER_DONE");
+                        // // println!("RECEIVER_DONE");
                     }) {
                         snd_jh.join().expect("snd join failed");
                         rcv_jh.join().expect("rcv join failed");
@@ -460,9 +460,9 @@ mod test {
     // fn explicit_single_sender_single_rcv_round_trip() {
     //     let mut loops = 0;
     //     loop {
-    //         // println!("\n\n\nLOOP: {}", loops);
+    //         // // println!("\n\n\nLOOP: {}", loops);
     //         // if loops % 1000 == 0 {
-    //         //     println!("LOOP {}", loops);
+    //         //     // println!("LOOP {}", loops);
     //         // }
     //         assert!(single_sender_single_rcv_round_trip_exp(8, 8, 5));
     //         loops += 1;

@@ -96,7 +96,7 @@ where
         event: T,
         guard: &mut MutexGuard<BackGuardInner<SenderSync>>,
     ) -> Result<(), (T, super::Error)> {
-        println!("{:<2}WRITE_TO_DISK <- {:?}", "", event);
+        // println!("{:<2}WRITE_TO_DISK <- {:?}", "", event);
         let mut buf: Vec<u8> = Vec::with_capacity(64);
         buf.clear();
         let mut e = DeflateEncoder::new(buf, Compression::fast());
@@ -161,10 +161,10 @@ where
 
     /// TODO
     pub fn flush(&mut self) -> Result<(), super::Error> {
-        println!("FLUSH");
+        // println!("FLUSH");
         let mut back_guard = self.mem_buffer.lock_back();
         if (*back_guard).inner.total_disk_writes != 0 {
-            println!("DISK MODE");
+            // println!("DISK MODE");
             // disk mode
             assert!((*back_guard).inner.sender_fp.is_some());
             if let Some(ref mut fp) = (*back_guard).inner.sender_fp {
@@ -172,12 +172,13 @@ where
             } else {
                 unreachable!()
             }
-            println!("CURRENT_SIZE: {}", self.mem_buffer.size());
+            // println!("CURRENT_SIZE: {}", self.mem_buffer.size());
             match self.mem_buffer.push_back(
                 private::Placement::Disk((*back_guard).inner.total_disk_writes),
                 &mut back_guard,
             ) {
                 Ok(must_wake_receiver) => {
+                    (*back_guard).inner.total_disk_writes = 0;
                     if must_wake_receiver {
                         let front_guard = self.mem_buffer.lock_front();
                         self.mem_buffer.notify_not_empty(&front_guard);
@@ -232,7 +233,7 @@ where
         // to-disk. Similar story for flipping from in-memory to to-disk.
 
         if (*back_guard).inner.total_disk_writes == 0 {
-            println!("MEMORY MODE");
+            // println!("MEMORY MODE");
             // in-memory mode
             let placed_event = private::Placement::Memory(event);
             match self.mem_buffer.push_back(placed_event, &mut back_guard) {
@@ -246,11 +247,11 @@ where
                 Err(deque::Error::Full(placed_event)) => {
                     self.write_to_disk(placed_event.extract().unwrap(), &mut back_guard)?;
                     (*back_guard).inner.total_disk_writes += 1;
-                    println!("MEMORY MODE ---> DISK MODE");
+                    // println!("MEMORY MODE ---> DISK MODE");
                 }
             }
         } else {
-            println!("DISK MODE");
+            // println!("DISK MODE");
             // disk mode
             self.write_to_disk(event, &mut back_guard)?;
             (*back_guard).inner.total_disk_writes += 1;
