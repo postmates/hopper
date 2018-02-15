@@ -2,7 +2,7 @@ use bincode::{deserialize_from, Infinite};
 use private;
 use byteorder::{BigEndian, ReadBytesExt};
 use serde::de::DeserializeOwned;
-use std::fs;
+use std::{fmt, fs};
 use std::io::{BufReader, ErrorKind, Read, Seek, SeekFrom};
 use std::iter::IntoIterator;
 use std::marker::PhantomData;
@@ -12,7 +12,10 @@ use flate2::read::DeflateDecoder;
 #[derive(Debug)]
 /// The 'receive' side of hopper, similar to
 /// [`std::sync::mpsc::Receiver`](https://doc.rust-lang.org/std/sync/mpsc/struct.Receiver.html).
-pub struct Receiver<T> {
+pub struct Receiver<T>
+where
+    T: fmt::Debug,
+{
     root: PathBuf,           // directory we store our queues in
     fp: BufReader<fs::File>, // active fp
     resource_type: PhantomData<T>,
@@ -22,7 +25,7 @@ pub struct Receiver<T> {
 
 impl<T> Receiver<T>
 where
-    T: DeserializeOwned,
+    T: DeserializeOwned + fmt::Debug,
 {
     #[doc(hidden)]
     pub fn new(
@@ -164,18 +167,24 @@ where
 }
 
 #[derive(Debug)]
-pub struct Iter<'a, T: 'a + DeserializeOwned> {
+pub struct Iter<'a, T>
+where
+    T: 'a + DeserializeOwned + fmt::Debug,
+{
     rx: &'a mut Receiver<T>,
 }
 
 #[derive(Debug)]
-pub struct IntoIter<T: DeserializeOwned> {
+pub struct IntoIter<T>
+where
+    T: DeserializeOwned + fmt::Debug,
+{
     rx: Receiver<T>,
 }
 
 impl<T> IntoIterator for Receiver<T>
 where
-    T: DeserializeOwned,
+    T: DeserializeOwned + fmt::Debug,
 {
     type Item = T;
     type IntoIter = IntoIter<T>;
@@ -187,7 +196,7 @@ where
 
 impl<'a, T> Iterator for Iter<'a, T>
 where
-    T: DeserializeOwned,
+    T: DeserializeOwned + fmt::Debug,
 {
     type Item = T;
 
@@ -198,7 +207,7 @@ where
 
 impl<T> Iterator for IntoIter<T>
 where
-    T: DeserializeOwned,
+    T: DeserializeOwned + fmt::Debug,
 {
     type Item = T;
 

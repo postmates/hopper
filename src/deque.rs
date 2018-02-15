@@ -12,7 +12,7 @@
 // mind: it's a contiguous block of memory with some fancy bits tacked on.
 use std::sync::{Condvar, Mutex, MutexGuard};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::{mem, sync};
+use std::{fmt, mem, sync};
 
 unsafe impl<T, S> Send for Queue<T, S> {}
 unsafe impl<T, S> Sync for Queue<T, S> {}
@@ -78,10 +78,11 @@ pub struct BackGuardInner<S> {
 impl<T, S> InnerQueue<T, S>
 where
     S: ::std::default::Default,
+    T: fmt::Debug,
 {
     pub fn with_capacity(capacity: usize) -> InnerQueue<T, S> {
         assert!(capacity > 0);
-        // println!("{:<2}CAPACITY: {}", "", capacity);
+        println!("{:<2}CAPACITY: {}", "", capacity);
         let mut data: Vec<Option<T>> = Vec::with_capacity(capacity);
         for _ in 0..capacity {
             data.push(None);
@@ -122,66 +123,42 @@ where
         elem: T,
         guard: &mut MutexGuard<BackGuardInner<S>>,
     ) -> Result<bool, Error<T>> {
-        // println!("{:<2}PUSH_BACK[{}]", "", (*guard).offset);
+        println!("{:<2}PUSH_BACK[{}] <- {:?}", "", (*guard).offset, elem);
         let mut must_wake_dequeuers = false;
-        if (*self.data.offset((*guard).offset)).is_some() {
-            // println!("{:<4}FULL", "");
+        let cur_size = self.size.load(Ordering::Acquire);
+        println!("{:<3}PUSH_BACK CURRENT_SIZE {}", "", cur_size);
+        if cur_size == self.capacity {
+            println!("{:<4}FULL", "");
             return Err(Error::Full(elem));
         } else {
+            assert!((*self.data.offset((*guard).offset)).is_none());
             *self.data.offset((*guard).offset) = Some(elem);
             (*guard).offset += 1;
             (*guard).offset %= self.capacity as isize;
-            let seen_size = self.size.fetch_add(1, Ordering::Release);
-            if seen_size == 0 {
-                // println!("{:<4}WAKE_DEQUEUERS", "");
+            if self.size.fetch_add(1, Ordering::Release) == 0 {
                 must_wake_dequeuers = true;
-            } else {
-                // println!("{:<4}SEEN_SIZE {}", "", seen_size);
             }
         }
         Ok(must_wake_dequeuers)
     }
 
-    pub unsafe fn pop_back_no_block(&self, guard: &mut MutexGuard<BackGuardInner<S>>) -> Option<T> {
-        // println!("{:<2}POP_BACK_NO_BLOCK[{}]", "", (*guard).offset);
-        if self.size.load(Ordering::Acquire) == 0 {
-            None
-        } else {
-            if ((*guard).offset - 1) < 0 {
-                (*guard).offset = (self.capacity - 1) as isize;
-            } else {
-                (*guard).offset -= 1;
-            };
-            let res = mem::replace(&mut *self.data.offset((*guard).offset), None);
-            self.size.fetch_sub(1, Ordering::Release);
-            res
-        }
-    }
-
     pub unsafe fn pop_front(&self) -> T {
-        loop {
-            let mut guard = self.front_lock.lock().expect("front lock poisoned");
-            while self.size.load(Ordering::Acquire) == 0 {
-                // println!("{:<4}BLOCK POP_FRONT", "");
-                guard = self.not_empty
-                    .wait(guard)
-                    .expect("oops could not wait pop_front");
-            }
-            // println!("{:<2}POP_FRONT[{}]", "", (*guard).offset);
-            let elem: Option<T> = mem::replace(&mut *self.data.offset((*guard).offset), None);
-            if elem.is_none() {
-                // It's possible that pop_back_no_block will have been called
-                // between the exit from size.load loop and our mem::replace. If
-                // that's the case, we have to try again.
-                continue;
-            }
-            assert!(elem.is_some());
-            *self.data.offset((*guard).offset) = None;
-            (*guard).offset += 1;
-            (*guard).offset %= self.capacity as isize;
-            self.size.fetch_sub(1, Ordering::Release);
-            return elem.unwrap();
+        let mut guard = self.front_lock.lock().expect("front lock poisoned");
+        while self.size.load(Ordering::Acquire) == 0 {
+            println!("{:<4}BLOCK POP_FRONT", "");
+            guard = self.not_empty
+                .wait(guard)
+                .expect("oops could not wait pop_front");
         }
+        let elem: Option<T> = mem::replace(&mut *self.data.offset((*guard).offset), None);
+        println!("{:<2}POP_FRONT[{}] -> {:?}", "", (*guard).offset, elem);
+        assert!(elem.is_some());
+        *self.data.offset((*guard).offset) = None;
+        (*guard).offset += 1;
+        (*guard).offset %= self.capacity as isize;
+        let prev_size = self.size.fetch_sub(1, Ordering::Release);
+        println!("{:<3}POP_FRONT PREVIOUS SIZE: {}", "", prev_size);
+        return elem.unwrap();
     }
 }
 
@@ -203,7 +180,11 @@ impl<T, S> Clone for Queue<T, S> {
     }
 }
 
-impl<T, S: ::std::default::Default> Queue<T, S> {
+impl<T, S> Queue<T, S>
+where
+    S: ::std::default::Default,
+    T: fmt::Debug,
+{
     pub fn with_capacity(capacity: usize) -> Queue<T, S> {
         let inner = sync::Arc::new(InnerQueue::with_capacity(capacity));
         Queue { inner: inner }
@@ -240,21 +221,6 @@ impl<T, S: ::std::default::Default> Queue<T, S> {
         mut guard: &mut MutexGuard<BackGuardInner<S>>,
     ) -> Result<bool, Error<T>> {
         unsafe { (*self.inner).push_back(elem, &mut guard) }
-    }
-
-    /// Pop an element from the back of the queue
-    ///
-    /// This function WILL NOT block if there are no elements to be popped from
-    /// the back. Compare this to pop_front's behaviour of blocking until an
-    /// element shows up. There is no blocking pop_back, unless someone has
-    /// written one and this comment has gone out of date.
-    ///
-    /// Note this function does remove the item under the current offset but
-    /// does not shift the offset on the assumption that the spot will be used
-    /// again immediately. You SHOULD REALLY call push_back after using this
-    /// function or wacky things will happen.
-    pub fn pop_back_no_block(&self, mut guard: &mut MutexGuard<BackGuardInner<S>>) -> Option<T> {
-        unsafe { (*self.inner).pop_back_no_block(&mut guard) }
     }
 
     pub fn notify_not_empty(&self, _guard: &MutexGuard<FrontGuardInner>) {

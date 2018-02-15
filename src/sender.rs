@@ -14,7 +14,10 @@ use deque;
 
 #[derive(Debug)]
 /// The 'send' side of hopper, similar to `std::sync::mpsc::Sender`.
-pub struct Sender<T> {
+pub struct Sender<T>
+where
+    T: fmt::Debug,
+{
     name: String,
     root: PathBuf, // directory we store our queues in
     max_disk_bytes: usize,
@@ -27,12 +30,13 @@ pub struct SenderSync {
     pub sender_fp: Option<BufWriter<fs::File>>,
     pub bytes_written: usize,
     pub sender_seq_num: usize,
+    pub total_disk_writes: usize,
     pub path: PathBuf, // active fp filename
 }
 
 impl<'de, T> Clone for Sender<T>
 where
-    T: Serialize + Deserialize<'de>,
+    T: Serialize + Deserialize<'de> + fmt::Debug,
 {
     fn clone(&self) -> Sender<T> {
         Sender {
@@ -92,7 +96,7 @@ where
         event: T,
         guard: &mut MutexGuard<BackGuardInner<SenderSync>>,
     ) -> Result<(), (T, super::Error)> {
-        // println!("WRITE_TO_DISK: {:?}", event);
+        println!("{:<2}WRITE_TO_DISK <- {:?}", "", event);
         let mut buf: Vec<u8> = Vec::with_capacity(64);
         buf.clear();
         let mut e = DeflateEncoder::new(buf, Compression::fast());
@@ -155,6 +159,39 @@ where
         Ok(())
     }
 
+    /// TODO
+    pub fn flush(&mut self) -> Result<(), super::Error> {
+        println!("FLUSH");
+        let mut back_guard = self.mem_buffer.lock_back();
+        if (*back_guard).inner.total_disk_writes != 0 {
+            println!("DISK MODE");
+            // disk mode
+            assert!((*back_guard).inner.sender_fp.is_some());
+            if let Some(ref mut fp) = (*back_guard).inner.sender_fp {
+                fp.flush().expect("unable to flush");
+            } else {
+                unreachable!()
+            }
+            println!("CURRENT_SIZE: {}", self.mem_buffer.size());
+            match self.mem_buffer.push_back(
+                private::Placement::Disk((*back_guard).inner.total_disk_writes),
+                &mut back_guard,
+            ) {
+                Ok(must_wake_receiver) => {
+                    if must_wake_receiver {
+                        let front_guard = self.mem_buffer.lock_front();
+                        self.mem_buffer.notify_not_empty(&front_guard);
+                        drop(front_guard);
+                    }
+                }
+                Err(_) => {
+                    return Err(super::Error::NoFlush);
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// send writes data out in chunks, like so:
     ///
     ///  u32: payload_size
@@ -187,85 +224,55 @@ where
         // disk, and then push the disk placement onto the deque. Order is
         // preserved, a couple of things go to disk and we're capped on memory.
         let mut back_guard = self.mem_buffer.lock_back();
-        let placed_event = private::Placement::Memory(event);
-        match self.mem_buffer.push_back(placed_event, &mut back_guard) {
-            Ok(must_wake_receiver) => {
+        // There are two sending modes: in-memory and to-disk. We detect that
+        // we're in to-disk mode by the value of `total_disk_writes`. If it's
+        // non-zero we default to writing to disk, then attempt a
+        // `placement::Disk(total_disk_writes)` push_back. If that is a success
+        // we're in in-memory mode. If that's a failure we're still in
+        // to-disk. Similar story for flipping from in-memory to to-disk.
+
+        if (*back_guard).inner.total_disk_writes == 0 {
+            println!("MEMORY MODE");
+            // in-memory mode
+            let placed_event = private::Placement::Memory(event);
+            match self.mem_buffer.push_back(placed_event, &mut back_guard) {
+                Ok(must_wake_receiver) => {
+                    if must_wake_receiver {
+                        let front_guard = self.mem_buffer.lock_front();
+                        self.mem_buffer.notify_not_empty(&front_guard);
+                        drop(front_guard);
+                    }
+                }
+                Err(deque::Error::Full(placed_event)) => {
+                    self.write_to_disk(placed_event.extract().unwrap(), &mut back_guard)?;
+                    (*back_guard).inner.total_disk_writes += 1;
+                    println!("MEMORY MODE ---> DISK MODE");
+                }
+            }
+        } else {
+            println!("DISK MODE");
+            // disk mode
+            self.write_to_disk(event, &mut back_guard)?;
+            (*back_guard).inner.total_disk_writes += 1;
+            assert!((*back_guard).inner.sender_fp.is_some());
+            if let Some(ref mut fp) = (*back_guard).inner.sender_fp {
+                fp.flush().expect("unable to flush");
+            } else {
+                unreachable!()
+            }
+            if let Ok(must_wake_receiver) = self.mem_buffer.push_back(
+                private::Placement::Disk((*back_guard).inner.total_disk_writes),
+                &mut back_guard,
+            ) {
+                (*back_guard).inner.total_disk_writes = 0;
                 if must_wake_receiver {
                     let front_guard = self.mem_buffer.lock_front();
                     self.mem_buffer.notify_not_empty(&front_guard);
                     drop(front_guard);
                 }
-                Ok(())
-            }
-            Err(deque::Error::Full(placed_event)) => {
-                match self.mem_buffer.pop_back_no_block(&mut back_guard) {
-                    None => {
-                        // receiver cleared us out
-                        //
-                        // It's possible between the time we've failed to write
-                        // and then try to dequeue the last entry that the
-                        // receiver has come through and pop_front'ed
-                        // everything. In that case, we push_back and move on.
-                        match self.mem_buffer.push_back(placed_event, &mut back_guard) {
-                            Ok(must_wake_receiver) => {
-                                if must_wake_receiver {
-                                    let mut front_guard = self.mem_buffer.lock_front();
-                                    self.mem_buffer.notify_not_empty(&front_guard);
-                                }
-                                Ok(())
-                            }
-                            _ => unreachable!(),
-                        }
-                    }
-                    Some(inner) => {
-                        let mut wrote_to_disk = 0;
-                        // We know we have to create a disk placement here. It's
-                        // possible that the previous item will be a disk
-                        // placement -- in which case, we just write and bump
-                        // the counter -- or is a memory placement and we have
-                        // to write both to disk and create a disk placement to
-                        // reflect that.
-                        match inner {
-                            private::Placement::Memory(frnt) => {
-                                self.write_to_disk(frnt, &mut back_guard)?;
-                                self.write_to_disk(
-                                    placed_event.extract().unwrap(),
-                                    &mut back_guard,
-                                )?;
-                                wrote_to_disk += 2;
-                            }
-                            private::Placement::Disk(sz) => {
-                                self.write_to_disk(
-                                    placed_event.extract().unwrap(),
-                                    &mut back_guard,
-                                )?;
-                                wrote_to_disk += sz;
-                                wrote_to_disk += 1;
-                            }
-                        }
-                        assert!((*back_guard).inner.sender_fp.is_some());
-                        if let Some(ref mut fp) = (*back_guard).inner.sender_fp {
-                            fp.flush().expect("unable to flush");
-                        } else {
-                            unreachable!()
-                        }
-                        match self.mem_buffer
-                            .push_back(private::Placement::Disk(wrote_to_disk), &mut back_guard)
-                        {
-                            Ok(must_wake_receiver) => {
-                                if must_wake_receiver {
-                                    let front_guard = self.mem_buffer.lock_front();
-                                    self.mem_buffer.notify_not_empty(&front_guard);
-                                    drop(front_guard);
-                                }
-                                Ok(())
-                            }
-                            _ => unreachable!(),
-                        }
-                    }
-                }
             }
         }
+        Ok(())
     }
 
     /// Return the sender's name

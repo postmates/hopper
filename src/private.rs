@@ -1,15 +1,21 @@
 use sender;
 use deque;
-use std::{cmp, fs, io};
+use std::{cmp, fmt, fs, io};
 use std::path::Path;
 
 #[derive(Debug)]
-pub enum Placement<T> {
+pub enum Placement<T>
+where
+    T: fmt::Debug,
+{
     Memory(T),
     Disk(usize),
 }
 
-impl<T> Placement<T> {
+impl<T> Placement<T>
+where
+    T: fmt::Debug,
+{
     pub fn extract(self) -> Option<T> {
         match self {
             Placement::Memory(elem) => Some(elem),

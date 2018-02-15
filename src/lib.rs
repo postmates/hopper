@@ -94,6 +94,8 @@ pub enum Error {
     NoSuchDirectory,
     /// Stdlib IO Error
     IoError(io::Error),
+    /// Could not flush Sender
+    NoFlush,
 }
 
 /// Create a (Sender, Reciever) pair in a like fashion to
@@ -169,52 +171,198 @@ mod test {
     use super::channel_with_explicit_capacity;
     use std::{mem, thread};
 
-    #[test]
-    fn round_trip() {
-        fn rnd_trip(in_memory_limit: usize, max_bytes: usize, evs: Vec<Vec<u32>>) -> TestResult {
-            let sz = mem::size_of_val(&evs);
-            if (in_memory_limit / sz) == 0 || (max_bytes / sz) == 0 {
-                return TestResult::discard();
-            }
-            if let Ok(dir) = tempdir::TempDir::new("hopper") {
-                if let Ok((mut snd, mut rcv)) = channel_with_explicit_capacity(
-                    "round_trip_order_preserved",
-                    dir.path(),
-                    in_memory_limit,
-                    max_bytes,
-                ) {
-                    for mut ev in evs.clone() {
-                        loop {
-                            match snd.send(ev) {
-                                Ok(()) => {
-                                    break;
-                                }
-                                Err(res) => {
-                                    ev = res.0;
-                                }
-                            }
+    fn round_trip_exp(in_memory_limit: usize, max_bytes: usize, total_elems: usize) -> bool {
+        // println!(
+        //     "IN_MEMORY_LIMIT: {}, MAX_BYTES: {}, TOTAL_ELEMS: {}",
+        //     in_memory_limit, max_bytes, total_elems
+        // );
+        if let Ok(dir) = tempdir::TempDir::new("hopper") {
+            if let Ok((mut snd, mut rcv)) = channel_with_explicit_capacity(
+                "round_trip_order_preserved",
+                dir.path(),
+                in_memory_limit,
+                max_bytes,
+            ) {
+                for i in 0..total_elems {
+                    loop {
+                        if snd.send(i).is_ok() {
+                            break;
                         }
                     }
-                    for ev in evs {
-                        let mut attempts = 0;
-                        loop {
-                            match rcv.iter().next() {
-                                None => {
-                                    attempts += 1;
-                                    assert!(attempts < 10_000);
-                                }
-                                Some(res) => {
-                                    assert_eq!(res, ev);
-                                    break;
-                                }
+                }
+                // clear space for one more element
+                let mut attempts = 0;
+                loop {
+                    match rcv.iter().next() {
+                        None => {
+                            attempts += 1;
+                            assert!(attempts < 10_000);
+                        }
+                        Some(res) => {
+                            assert_eq!(res, 0);
+                            break;
+                        }
+                    }
+                }
+                // flush any disk writes
+                loop {
+                    if snd.flush().is_ok() {
+                        break;
+                    }
+                }
+                // pull the rest of the elements
+                for i in 1..total_elems {
+                    // println!("RECV: {}", i);
+                    // the +1 is for the unflushed item
+                    let mut attempts = 0;
+                    loop {
+                        match rcv.iter().next() {
+                            None => {
+                                attempts += 1;
+                                assert!(attempts < 10_000);
+                            }
+                            Some(res) => {
+                                assert_eq!(res, i);
+                                break;
                             }
                         }
                     }
                 }
             }
-            TestResult::passed()
         }
-        QuickCheck::new().quickcheck(rnd_trip as fn(usize, usize, Vec<Vec<u32>>) -> TestResult);
+        true
+    }
+
+    // #[test]
+    // fn explicit_round_trip() {
+    //     let in_memory_limit = 73;
+    //     let max_bytes = 97;
+    //     let total_elems = 0;
+    //     assert!(round_trip_exp(in_memory_limit, max_bytes, total_elems))
+    // }
+
+    #[test]
+    fn round_trip() {
+        fn inner(in_memory_limit: usize, max_bytes: usize, total_elems: usize) -> TestResult {
+            // println!(
+            //     "IN_MEMORY_LIMIT: {}, MAX_BYTES: {}, TOTAL_ELEMS: {}",
+            //     in_memory_limit, max_bytes, total_elems
+            // );
+            let sz = mem::size_of::<u64>();
+            if (in_memory_limit / sz) == 0 || (max_bytes / sz) == 0 || total_elems == 0 {
+                return TestResult::discard();
+            }
+            TestResult::from_bool(round_trip_exp(in_memory_limit, max_bytes, total_elems))
+        }
+        QuickCheck::new().quickcheck(inner as fn(usize, usize, usize) -> TestResult);
+    }
+
+    fn multi_thread_concurrent_snd_and_rcv_round_trip_exp(
+        total_senders: usize,
+        in_memory_bytes: usize,
+        disk_bytes: usize,
+        vals: Vec<u64>,
+    ) -> bool {
+        if let Ok(dir) = tempdir::TempDir::new("hopper") {
+            if let Ok((snd, mut rcv)) =
+                channel_with_explicit_capacity("tst", dir.path(), in_memory_bytes, disk_bytes)
+            {
+                let chunk_size = vals.len() / total_senders;
+
+                let mut snd_jh = Vec::new();
+                let snd_vals = vals.clone();
+                for chunk in snd_vals.chunks(chunk_size) {
+                    let mut thr_snd = snd.clone();
+                    let chunk = chunk.to_vec();
+                    snd_jh.push(thread::spawn(move || {
+                        let mut queued = Vec::new();
+                        println!("CHUNK: {:?}", chunk);
+                        for mut ev in chunk {
+                            loop {
+                                match thr_snd.send(ev) {
+                                    Err(res) => {
+                                        ev = res.0;
+                                    }
+                                    Ok(()) => {
+                                        break;
+                                    }
+                                }
+                            }
+                            queued.push(ev);
+                        }
+                        let mut attempts = 0;
+                        loop {
+                            if thr_snd.flush().is_ok() {
+                                break;
+                            }
+                            thread::sleep(::std::time::Duration::from_millis(100));
+                            attempts += 1;
+                            assert!(attempts < 10);
+                        }
+                        queued
+                    }))
+                }
+
+                let expected_total_vals = vals.len();
+                let rcv_jh = thread::spawn(move || {
+                    let mut collected = Vec::new();
+                    let mut rcv_iter = rcv.iter();
+                    while collected.len() < expected_total_vals {
+                        let mut attempts = 0;
+                        loop {
+                            match rcv_iter.next() {
+                                None => {
+                                    attempts += 1;
+                                    assert!(attempts < 10_000);
+                                }
+                                Some(res) => {
+                                    println!("RECVD: {:?}", res);
+                                    collected.push(res);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    collected
+                });
+
+                let mut snd_vals: Vec<u64> = Vec::new();
+                for jh in snd_jh {
+                    snd_vals.append(&mut jh.join().expect("snd join failed"));
+                }
+                let mut rcv_vals = rcv_jh.join().expect("rcv join failed");
+
+                rcv_vals.sort();
+                snd_vals.sort();
+
+                assert_eq!(rcv_vals, snd_vals);
+            }
+        }
+        true
+    }
+
+    #[test]
+    fn explicit_multi_thread_concurrent_snd_and_rcv_round_trip() {
+        let total_senders = 10;
+        let in_memory_bytes = 50;
+        let disk_bytes = 10;
+        let vals = vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
+
+        let mut loops = 0;
+        loop {
+            println!("\n\n\nLOOP: {}", loops);
+            assert!(multi_thread_concurrent_snd_and_rcv_round_trip_exp(
+                total_senders,
+                in_memory_bytes,
+                disk_bytes,
+                vals.clone(),
+            ));
+            loops += 1;
+            if loops > 1_000_000 {
+                break;
+            }
+            thread::sleep(::std::time::Duration::from_millis(1));
+        }
     }
 
     #[test]
@@ -232,71 +380,16 @@ mod test {
             {
                 return TestResult::discard();
             }
-            if let Ok(dir) = tempdir::TempDir::new("hopper") {
-                if let Ok((snd, mut rcv)) =
-                    channel_with_explicit_capacity("tst", dir.path(), in_memory_bytes, disk_bytes)
-                {
-                    let chunk_size = vals.len() / total_senders;
-
-                    let mut snd_jh = Vec::new();
-                    let snd_vals = vals.clone();
-                    for chunk in snd_vals.chunks(chunk_size) {
-                        let mut thr_snd = snd.clone();
-                        let chunk = chunk.to_vec();
-                        snd_jh.push(thread::spawn(move || {
-                            let mut queued = Vec::new();
-                            for mut ev in chunk {
-                                loop {
-                                    match thr_snd.send(ev) {
-                                        Err(res) => {
-                                            ev = res.0;
-                                        }
-                                        Ok(()) => {
-                                            break;
-                                        }
-                                    }
-                                }
-                                queued.push(ev);
-                            }
-                            queued
-                        }))
-                    }
-
-                    let expected_total_vals = vals.len();
-                    let rcv_jh = thread::spawn(move || {
-                        let mut collected = Vec::new();
-                        let mut rcv_iter = rcv.iter();
-                        while collected.len() < expected_total_vals {
-                            let mut attempts = 0;
-                            loop {
-                                match rcv_iter.next() {
-                                    None => {
-                                        attempts += 1;
-                                        assert!(attempts < 10_000);
-                                    }
-                                    Some(res) => {
-                                        collected.push(res);
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                        collected
-                    });
-
-                    let mut snd_vals: Vec<u64> = Vec::new();
-                    for jh in snd_jh {
-                        snd_vals.append(&mut jh.join().expect("snd join failed"));
-                    }
-                    let mut rcv_vals = rcv_jh.join().expect("rcv join failed");
-
-                    rcv_vals.sort();
-                    snd_vals.sort();
-
-                    assert_eq!(rcv_vals, snd_vals);
-                }
-            }
-            TestResult::passed()
+            println!(
+                "TOTAL_SENDERS: {}, IN_MEMORY_BYTES: {}, DISK_BYTES: {}, VALS: {:?}",
+                total_senders, in_memory_bytes, disk_bytes, vals
+            );
+            TestResult::from_bool(multi_thread_concurrent_snd_and_rcv_round_trip_exp(
+                total_senders,
+                in_memory_bytes,
+                disk_bytes,
+                vals,
+            ))
         }
         QuickCheck::new().quickcheck(inner as fn(usize, usize, usize, Vec<u64>) -> TestResult);
     }
@@ -320,6 +413,15 @@ mod test {
                             }
                         }
                     }
+                    let mut attempts = 0;
+                    loop {
+                        if snd.flush().is_ok() {
+                            break;
+                        }
+                        thread::sleep(::std::time::Duration::from_millis(100));
+                        attempts += 1;
+                        assert!(attempts < 10);
+                    }
                 }) {
                     let builder = thread::Builder::new();
                     if let Ok(rcv_jh) = builder.spawn(move || {
@@ -329,7 +431,7 @@ mod test {
                             let mut attempts = 0;
                             loop {
                                 if let Some(rcvd) = rcv_iter.next() {
-                                    // println!("RECV: {}", rcvd);
+                                    // println!("SINGLE_SENDER RECV: {}", rcvd);
                                     debug_assert_eq!(
                                         cur, rcvd,
                                         "FAILED TO GET ALL IN ORDER: {:?}",
@@ -343,6 +445,7 @@ mod test {
                                 }
                             }
                         }
+                        // println!("RECEIVER_DONE");
                     }) {
                         snd_jh.join().expect("snd join failed");
                         rcv_jh.join().expect("rcv join failed");
@@ -353,18 +456,22 @@ mod test {
         true
     }
 
-    #[test]
-    fn explicit_single_sender_single_rcv_round_trip() {
-        let mut loops = 0;
-        loop {
-            // println!("\n\n\nLOOP: {}", loops);
-            assert!(single_sender_single_rcv_round_trip_exp(8, 8, 2));
-            loops += 1;
-            if loops > 1_000_000 {
-                break;
-            }
-        }
-    }
+    // #[test]
+    // fn explicit_single_sender_single_rcv_round_trip() {
+    //     let mut loops = 0;
+    //     loop {
+    //         // println!("\n\n\nLOOP: {}", loops);
+    //         // if loops % 1000 == 0 {
+    //         //     println!("LOOP {}", loops);
+    //         // }
+    //         assert!(single_sender_single_rcv_round_trip_exp(8, 8, 5));
+    //         loops += 1;
+    //         if loops > 1_000_000 {
+    //             break;
+    //         }
+    //         thread::sleep(::std::time::Duration::from_millis(1));
+    //     }
+    // }
 
     #[test]
     fn single_sender_single_rcv_round_trip() {
