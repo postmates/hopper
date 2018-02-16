@@ -116,10 +116,10 @@ fn hopper_benchmark(c: &mut Criterion) {
         vec![
             // all in-memory
             HopperInput {
-                in_memory_total: 2 << 13,
+                in_memory_total: 2 << 11,
                 max_disk_total: 2 << 14,
                 total_senders: 2 << 1,
-                ith: 2 << 12,
+                ith: 2 << 11,
             },
             // swap to disk
             HopperInput {

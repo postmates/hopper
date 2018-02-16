@@ -77,7 +77,7 @@ pub use self::receiver::Receiver;
 pub use self::sender::Sender;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-use std::{fmt, fs, io, mem};
+use std::{fs, io, mem};
 use std::path::Path;
 
 /// Defines the errors that hopper will bubble up
@@ -119,9 +119,9 @@ pub enum Error {
 /// ```
 pub fn channel<T>(name: &str, data_dir: &Path) -> Result<(Sender<T>, Receiver<T>), Error>
 where
-    T: Serialize + DeserializeOwned + fmt::Debug,
+    T: Serialize + DeserializeOwned,
 {
-    channel_with_explicit_capacity(name, data_dir, 1_048_576, 1_048_576 * 100)
+    channel_with_explicit_capacity(name, data_dir, 0x100_000, 0x10_000_000)
 }
 
 /// Create a (Sender, Reciever) pair in a like fashion to
@@ -139,7 +139,7 @@ pub fn channel_with_explicit_capacity<T>(
     max_disk_bytes: usize,
 ) -> Result<(Sender<T>, Receiver<T>), Error>
 where
-    T: Serialize + DeserializeOwned + fmt::Debug,
+    T: Serialize + DeserializeOwned,
 {
     let root = data_dir.join(name);
     if !root.is_dir() {
@@ -151,7 +151,7 @@ where
         }
     }
     let sz = mem::size_of::<T>();
-    let max_disk_bytes = ::std::cmp::max(1_048_576, max_disk_bytes);
+    let max_disk_bytes = ::std::cmp::max(0x100_000, max_disk_bytes);
     let total_memory_limit: usize = ::std::cmp::max(1, max_memory_bytes / sz);
     let q: private::Queue<T> = deque::Queue::with_capacity(total_memory_limit);
     if let Err(e) = private::clear_directory(&root) {
@@ -172,10 +172,6 @@ mod test {
     use std::{mem, thread};
 
     fn round_trip_exp(in_memory_limit: usize, max_bytes: usize, total_elems: usize) -> bool {
-        // // println!(
-        //     "IN_MEMORY_LIMIT: {}, MAX_BYTES: {}, TOTAL_ELEMS: {}",
-        //     in_memory_limit, max_bytes, total_elems
-        // );
         if let Ok(dir) = tempdir::TempDir::new("hopper") {
             if let Ok((mut snd, mut rcv)) = channel_with_explicit_capacity(
                 "round_trip_order_preserved",
@@ -212,7 +208,6 @@ mod test {
                 }
                 // pull the rest of the elements
                 for i in 1..total_elems {
-                    // println!("RECV: {}", i);
                     // the +1 is for the unflushed item
                     let mut attempts = 0;
                     loop {
@@ -233,21 +228,9 @@ mod test {
         true
     }
 
-    // #[test]
-    // fn explicit_round_trip() {
-    //     let in_memory_limit = 73;
-    //     let max_bytes = 97;
-    //     let total_elems = 0;
-    //     assert!(round_trip_exp(in_memory_limit, max_bytes, total_elems))
-    // }
-
     #[test]
     fn round_trip() {
         fn inner(in_memory_limit: usize, max_bytes: usize, total_elems: usize) -> TestResult {
-            // // println!(
-            //     "IN_MEMORY_LIMIT: {}, MAX_BYTES: {}, TOTAL_ELEMS: {}",
-            //     in_memory_limit, max_bytes, total_elems
-            // );
             let sz = mem::size_of::<u64>();
             if (in_memory_limit / sz) == 0 || (max_bytes / sz) == 0 || total_elems == 0 {
                 return TestResult::discard();
@@ -276,7 +259,6 @@ mod test {
                     let chunk = chunk.to_vec();
                     snd_jh.push(thread::spawn(move || {
                         let mut queued = Vec::new();
-                        // println!("CHUNK: {:?}", chunk);
                         for mut ev in chunk {
                             loop {
                                 match thr_snd.send(ev) {
@@ -316,7 +298,6 @@ mod test {
                                     assert!(attempts < 10_000);
                                 }
                                 Some(res) => {
-                                    // println!("RECVD: {:?}", res);
                                     collected.push(res);
                                     break;
                                 }
@@ -350,9 +331,6 @@ mod test {
 
         let mut loops = 0;
         loop {
-            if loops % 100 == 0 {
-                println!("LOOP: {}", loops);
-            }
             assert!(multi_thread_concurrent_snd_and_rcv_round_trip_exp(
                 total_senders,
                 in_memory_bytes,
@@ -382,10 +360,6 @@ mod test {
             {
                 return TestResult::discard();
             }
-            // println!(
-            //     "TOTAL_SENDERS: {}, IN_MEMORY_BYTES: {}, DISK_BYTES: {}, VALS: {:?}",
-            //     total_senders, in_memory_bytes, disk_bytes, vals
-            // );
             TestResult::from_bool(multi_thread_concurrent_snd_and_rcv_round_trip_exp(
                 total_senders,
                 in_memory_bytes,
@@ -409,7 +383,6 @@ mod test {
                 if let Ok(snd_jh) = builder.spawn(move || {
                     for i in 0..total_vals {
                         loop {
-                            // // println!("SEND: {}", i);
                             if snd.send(i).is_ok() {
                                 break;
                             }
@@ -433,7 +406,6 @@ mod test {
                             let mut attempts = 0;
                             loop {
                                 if let Some(rcvd) = rcv_iter.next() {
-                                    // // println!("SINGLE_SENDER RECV: {}", rcvd);
                                     debug_assert_eq!(
                                         cur, rcvd,
                                         "FAILED TO GET ALL IN ORDER: {:?}",
@@ -447,7 +419,6 @@ mod test {
                                 }
                             }
                         }
-                        // // println!("RECEIVER_DONE");
                     }) {
                         snd_jh.join().expect("snd join failed");
                         rcv_jh.join().expect("rcv join failed");
@@ -462,9 +433,6 @@ mod test {
     fn explicit_single_sender_single_rcv_round_trip() {
         let mut loops = 0;
         loop {
-            if loops % 100 == 0 {
-                println!("LOOP: {}", loops);
-            }
             assert!(single_sender_single_rcv_round_trip_exp(8, 8, 5));
             loops += 1;
             if loops > 2_500 {

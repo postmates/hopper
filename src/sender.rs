@@ -2,7 +2,7 @@ use bincode::{serialize_into, Infinite};
 use byteorder::{BigEndian, WriteBytesExt};
 use private;
 use serde::{Deserialize, Serialize};
-use std::{fmt, fs};
+use std::fs;
 use std::sync::MutexGuard;
 use deque::BackGuardInner;
 use std::io::{BufWriter, Write};
@@ -14,10 +14,7 @@ use deque;
 
 #[derive(Debug)]
 /// The 'send' side of hopper, similar to `std::sync::mpsc::Sender`.
-pub struct Sender<T>
-where
-    T: fmt::Debug,
-{
+pub struct Sender<T> {
     name: String,
     root: PathBuf, // directory we store our queues in
     max_disk_bytes: usize,
@@ -36,7 +33,7 @@ pub struct SenderSync {
 
 impl<'de, T> Clone for Sender<T>
 where
-    T: Serialize + Deserialize<'de> + fmt::Debug,
+    T: Serialize + Deserialize<'de>,
 {
     fn clone(&self) -> Sender<T> {
         Sender {
@@ -51,7 +48,7 @@ where
 
 impl<T> Sender<T>
 where
-    T: Serialize + fmt::Debug,
+    T: Serialize,
 {
     #[doc(hidden)]
     pub fn new<S>(
@@ -96,7 +93,6 @@ where
         event: T,
         guard: &mut MutexGuard<BackGuardInner<SenderSync>>,
     ) -> Result<(), (T, super::Error)> {
-        // println!("{:<2}WRITE_TO_DISK <- {:?}", "", event);
         let mut buf: Vec<u8> = Vec::with_capacity(64);
         buf.clear();
         let mut e = DeflateEncoder::new(buf, Compression::fast());
@@ -159,12 +155,15 @@ where
         Ok(())
     }
 
-    /// TODO
+    /// Attempt to flush any outstanding disk writes to the deque
+    ///
+    /// This function will attempt to flush outstanding disk writes, which may
+    /// fail if the in-memory buffer is full. This function is useful when
+    /// traffic patterns are bursty, meaning a write may end up being stranded
+    /// in limbo for a good spell.
     pub fn flush(&mut self) -> Result<(), super::Error> {
-        // println!("FLUSH");
         let mut back_guard = self.mem_buffer.lock_back();
         if (*back_guard).inner.total_disk_writes != 0 {
-            // println!("DISK MODE");
             // disk mode
             assert!((*back_guard).inner.sender_fp.is_some());
             if let Some(ref mut fp) = (*back_guard).inner.sender_fp {
@@ -172,7 +171,6 @@ where
             } else {
                 unreachable!()
             }
-            // println!("CURRENT_SIZE: {}", self.mem_buffer.size());
             match self.mem_buffer.push_back(
                 private::Placement::Disk((*back_guard).inner.total_disk_writes),
                 &mut back_guard,
@@ -220,20 +218,21 @@ where
         // Dang!
         //
         // We start off this function assuming that we can place the event into
-        // memory and, failing that, then pop the last pushed item off the
-        // deque, combine that and this event into a disk placement, write to
-        // disk, and then push the disk placement onto the deque. Order is
-        // preserved, a couple of things go to disk and we're capped on memory.
-        let mut back_guard = self.mem_buffer.lock_back();
+        // memory and, failing that, write the value to disk and flip into 'disk
+        // mode'. In disk mode every event is written to disk, then we attempt
+        // to write a disk placement into the deque. If that succeeeds we move
+        // back to memory-mode for the next write, in which we attempt to write
+        // to the deque first. In this was order is preserved, a couple of
+        // things go to disk and we're capped on memory. Or, more specifically:
+        //
         // There are two sending modes: in-memory and to-disk. We detect that
         // we're in to-disk mode by the value of `total_disk_writes`. If it's
         // non-zero we default to writing to disk, then attempt a
         // `placement::Disk(total_disk_writes)` push_back. If that is a success
         // we're in in-memory mode. If that's a failure we're still in
         // to-disk. Similar story for flipping from in-memory to to-disk.
-
+        let mut back_guard = self.mem_buffer.lock_back();
         if (*back_guard).inner.total_disk_writes == 0 {
-            // println!("MEMORY MODE");
             // in-memory mode
             let placed_event = private::Placement::Memory(event);
             match self.mem_buffer.push_back(placed_event, &mut back_guard) {
@@ -247,11 +246,9 @@ where
                 Err(deque::Error::Full(placed_event)) => {
                     self.write_to_disk(placed_event.extract().unwrap(), &mut back_guard)?;
                     (*back_guard).inner.total_disk_writes += 1;
-                    // println!("MEMORY MODE ---> DISK MODE");
                 }
             }
         } else {
-            // println!("DISK MODE");
             // disk mode
             self.write_to_disk(event, &mut back_guard)?;
             (*back_guard).inner.total_disk_writes += 1;

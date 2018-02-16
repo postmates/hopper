@@ -12,7 +12,7 @@
 // mind: it's a contiguous block of memory with some fancy bits tacked on.
 use std::sync::{Condvar, Mutex, MutexGuard};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::{fmt, mem, sync};
+use std::{mem, sync};
 
 unsafe impl<T, S> Send for Queue<T, S> {}
 unsafe impl<T, S> Sync for Queue<T, S> {}
@@ -33,17 +33,13 @@ struct InnerQueue<T, S> {
     not_empty: Condvar,
 }
 
-// There are two distinct things in InnerQueue that are pointers and we've got
-// to be careful about deallocation. Namely, the contiguous array is an array of
-// pointers. This is... well, less than ideal for memory locality but that's a
-// thing for another time. Anyhow.
 impl<T, S> Drop for InnerQueue<T, S> {
     fn drop(&mut self) {
         unsafe {
             // Turn self.data back into a droppable thing...
             let data =
                 Vec::from_raw_parts(self.data, self.size.load(Ordering::Acquire), self.capacity);
-            // drop the deflated self.data.
+            // and drop it on the floor.
             drop(data);
         }
     }
@@ -78,11 +74,9 @@ pub struct BackGuardInner<S> {
 impl<T, S> InnerQueue<T, S>
 where
     S: ::std::default::Default,
-    T: fmt::Debug,
 {
     pub fn with_capacity(capacity: usize) -> InnerQueue<T, S> {
         assert!(capacity > 0);
-        // println!("{:<2}CAPACITY: {}", "", capacity);
         let mut data: Vec<Option<T>> = Vec::with_capacity(capacity);
         for _ in 0..capacity {
             data.push(None);
@@ -123,12 +117,9 @@ where
         elem: T,
         guard: &mut MutexGuard<BackGuardInner<S>>,
     ) -> Result<bool, Error<T>> {
-        // println!("{:<2}PUSH_BACK[{}] <- {:?}", "", (*guard).offset, elem);
         let mut must_wake_dequeuers = false;
         let cur_size = self.size.load(Ordering::Acquire);
-        // println!("{:<3}PUSH_BACK CURRENT_SIZE {}", "", cur_size);
         if cur_size == self.capacity {
-            // println!("{:<4}FULL", "");
             return Err(Error::Full(elem));
         } else {
             assert!((*self.data.offset((*guard).offset)).is_none());
@@ -145,20 +136,17 @@ where
     pub unsafe fn pop_front(&self) -> T {
         let mut guard = self.front_lock.lock().expect("front lock poisoned");
         while self.size.load(Ordering::Acquire) == 0 {
-            // println!("{:<4}BLOCK POP_FRONT", "");
             guard = self.not_empty
                 .wait(guard)
                 .expect("oops could not wait pop_front");
         }
         let elem: Option<T> = mem::replace(&mut *self.data.offset((*guard).offset), None);
-        // println!("{:<2}POP_FRONT[{}] -> {:?}", "", (*guard).offset, elem);
         assert!(elem.is_some());
         *self.data.offset((*guard).offset) = None;
         (*guard).offset += 1;
         (*guard).offset %= self.capacity as isize;
-        let prev_size = self.size.fetch_sub(1, Ordering::Release);
-        // println!("{:<3}POP_FRONT PREVIOUS SIZE: {}", "", prev_size);
-        return elem.unwrap();
+        self.size.fetch_sub(1, Ordering::Release);
+        elem.unwrap()
     }
 }
 
@@ -183,7 +171,6 @@ impl<T, S> Clone for Queue<T, S> {
 impl<T, S> Queue<T, S>
 where
     S: ::std::default::Default,
-    T: fmt::Debug,
 {
     pub fn with_capacity(capacity: usize) -> Queue<T, S> {
         let inner = sync::Arc::new(InnerQueue::with_capacity(capacity));
