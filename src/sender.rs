@@ -94,7 +94,6 @@ where
         guard: &mut MutexGuard<BackGuardInner<SenderSync>>,
     ) -> Result<(), (T, super::Error)> {
         let mut buf: Vec<u8> = Vec::with_capacity(64);
-        buf.clear();
         let mut e = DeflateEncoder::new(buf, Compression::fast());
         serialize_into(&mut e, &event, Infinite).expect("could not serialize");
         buf = e.finish().unwrap();

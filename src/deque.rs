@@ -118,8 +118,7 @@ where
         guard: &mut MutexGuard<BackGuardInner<S>>,
     ) -> Result<bool, Error<T>> {
         let mut must_wake_dequeuers = false;
-        let cur_size = self.size.load(Ordering::Acquire);
-        if cur_size == self.capacity {
+        if self.size.load(Ordering::Acquire) == self.capacity {
             return Err(Error::Full(elem));
         } else {
             assert!((*self.data.offset((*guard).offset)).is_none());
