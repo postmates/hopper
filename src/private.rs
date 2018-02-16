@@ -1,51 +1,62 @@
-use std::collections::VecDeque;
-use std::sync::{Arc, Mutex};
-use std::io::BufWriter;
-use std::fs;
+use sender;
+use deque;
+use std::{cmp, fs, io};
+use std::path::Path;
 
-#[derive(Default, Debug)]
-pub struct FsSync<T> {
-    pub receiver_read_id: u64,
-    pub receiver_idx: Option<usize>,
-    pub receiver_max_idx: Option<usize>,
-
-    pub write_bound: Option<usize>,
-    pub writes_to_read: usize,
-
-    pub sender_idx: usize,
-    pub sender_captured_recv_id: u64,
-    pub sender_fp: Option<BufWriter<fs::File>>,
-
-    pub in_memory_idx: usize,
-    pub bytes_written: usize,
-    pub disk_writes_to_read: usize,
-    pub sender_seq_num: usize,
-    pub mem_buffer: VecDeque<T>,
-    pub disk_buffer: VecDeque<T>,
+#[derive(Debug)]
+pub enum Placement<T> {
+    Memory(T),
+    Disk(usize),
 }
 
-impl<T> FsSync<T> {
-    pub fn new(cap: usize) -> FsSync<T> {
-        FsSync {
-            receiver_read_id: 0,
-            receiver_idx: None,
-            receiver_max_idx: None,
-
-            write_bound: None,
-            writes_to_read: 0,
-
-            sender_idx: 0,
-            sender_captured_recv_id: 0,
-            sender_fp: None,
-
-            in_memory_idx: cap,
-            bytes_written: 0,
-            disk_writes_to_read: 0,
-            sender_seq_num: 0,
-            mem_buffer: VecDeque::with_capacity(cap),
-            disk_buffer: VecDeque::with_capacity(cap),
+impl<T> Placement<T> {
+    pub fn extract(self) -> Option<T> {
+        match self {
+            Placement::Memory(elem) => Some(elem),
+            Placement::Disk(_) => None,
         }
     }
 }
 
-pub type FSLock<T> = Arc<Mutex<FsSync<T>>>;
+pub type Queue<T> = deque::Queue<Placement<T>, sender::SenderSync>;
+
+pub fn read_seq_num(data_dir: &Path) -> io::Result<usize> {
+    let mut max = 0;
+    for directory_entry in fs::read_dir(data_dir)? {
+        let num = directory_entry?
+            .file_name()
+            .to_str()
+            .unwrap()
+            .parse::<usize>()
+            .unwrap();
+        max = cmp::max(num, max);
+    }
+    Ok(max)
+}
+
+pub fn read_seq_num_min(data_dir: &Path) -> io::Result<usize> {
+    let mut min = usize::max_value();
+    let mut worked = false;
+    for directory_entry in fs::read_dir(data_dir)? {
+        let num = directory_entry?
+            .file_name()
+            .to_str()
+            .unwrap()
+            .parse::<usize>()
+            .unwrap();
+        worked = true;
+        min = cmp::min(num, min);
+    }
+    assert!(worked);
+    Ok(min)
+}
+
+pub fn clear_directory(data_dir: &Path) -> io::Result<()> {
+    if data_dir.is_dir() {
+        for directory_entry in fs::read_dir(data_dir)? {
+            let de = directory_entry?;
+            fs::remove_file(de.path())?
+        }
+    }
+    Ok(())
+}

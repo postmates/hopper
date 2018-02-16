@@ -1,29 +1,34 @@
 use bincode::{serialize_into, Infinite};
+use byteorder::{BigEndian, WriteBytesExt};
 use private;
 use serde::{Deserialize, Serialize};
-use std::fmt;
 use std::fs;
+use std::sync::MutexGuard;
+use deque::BackGuardInner;
 use std::io::{BufWriter, Write};
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
-
-#[inline]
-fn u32tou8abe(v: u32) -> [u8; 4] {
-    [v as u8, (v >> 8) as u8, (v >> 24) as u8, (v >> 16) as u8]
-}
+use flate2::Compression;
+use flate2::write::DeflateEncoder;
+use deque;
 
 #[derive(Debug)]
-/// The 'send' side of hopper, similar to
-/// [`std::sync::mpsc::Sender`](https://doc.rust-lang.org/std/sync/mpsc/struct.
-/// Sender.html).
+/// The 'send' side of hopper, similar to `std::sync::mpsc::Sender`.
 pub struct Sender<T> {
     name: String,
     root: PathBuf, // directory we store our queues in
-    path: PathBuf, // active fp filename
-    seq_num: usize,
-    max_bytes: usize,
-    fs_lock: private::FSLock<T>,
+    max_disk_bytes: usize,
+    mem_buffer: private::Queue<T>,
     resource_type: PhantomData<T>,
+}
+
+#[derive(Default, Debug)]
+pub struct SenderSync {
+    pub sender_fp: Option<BufWriter<fs::File>>,
+    pub bytes_written: usize,
+    pub sender_seq_num: usize,
+    pub total_disk_writes: usize,
+    pub path: PathBuf, // active fp filename
 }
 
 impl<'de, T> Clone for Sender<T>
@@ -31,13 +36,13 @@ where
     T: Serialize + Deserialize<'de>,
 {
     fn clone(&self) -> Sender<T> {
-        use std::sync::Arc;
-        Sender::new(
-            self.name.clone(),
-            &self.root,
-            self.max_bytes,
-            Arc::clone(&self.fs_lock),
-        ).expect("COULD NOT CLONE")
+        Sender {
+            name: self.name.clone(),
+            root: self.root.clone(),
+            max_disk_bytes: self.max_disk_bytes,
+            mem_buffer: self.mem_buffer.clone(),
+            resource_type: self.resource_type,
+        }
     }
 }
 
@@ -49,52 +54,140 @@ where
     pub fn new<S>(
         name: S,
         data_dir: &Path,
-        max_bytes: usize,
-        fs_lock: private::FSLock<T>,
+        max_disk_bytes: usize,
+        mem_buffer: private::Queue<T>,
     ) -> Result<Sender<T>, super::Error>
     where
-        S: Into<String> + fmt::Display,
+        S: Into<String>,
     {
-        use std::sync::Arc;
-        let init_fs_lock = Arc::clone(&fs_lock);
-        let mut syn = init_fs_lock.lock().expect("Sender fs_lock poisoned");
+        let setup_mem_buffer = mem_buffer.clone(); // clone is cheeeeeap
+        let mut guard = setup_mem_buffer.lock_back();
         if !data_dir.is_dir() {
             return Err(super::Error::NoSuchDirectory);
         }
-        let seq_num = match fs::read_dir(data_dir)
-            .unwrap()
-            .map(|de| {
-                de.unwrap()
-                    .path()
-                    .file_name()
-                    .unwrap()
-                    .to_str()
-                    .unwrap()
-                    .parse::<usize>()
-                    .unwrap()
-            })
-            .max()
-        {
-            Some(sn) => sn,
-            None => 0,
-        };
-        let log = data_dir.join(format!("{}", seq_num));
-        match fs::OpenOptions::new().append(true).create(true).open(&log) {
-            Ok(fp) => {
-                syn.sender_fp = Some(BufWriter::new(fp));
-                (*syn).sender_seq_num = seq_num;
-                Ok(Sender {
-                    name: name.into(),
-                    root: data_dir.to_path_buf(),
-                    path: log,
-                    seq_num: seq_num,
-                    max_bytes: max_bytes,
-                    fs_lock: fs_lock,
-                    resource_type: PhantomData,
-                })
+        match private::read_seq_num(data_dir) {
+            Ok(seq_num) => {
+                let log = data_dir.join(format!("{}", seq_num));
+                match fs::OpenOptions::new().append(true).create(true).open(&log) {
+                    Ok(fp) => {
+                        (*guard).inner.sender_fp = Some(BufWriter::new(fp));
+                        (*guard).inner.sender_seq_num = seq_num;
+                        (*guard).inner.path = log;
+                        Ok(Sender {
+                            name: name.into(),
+                            root: data_dir.to_path_buf(),
+                            max_disk_bytes: max_disk_bytes,
+                            mem_buffer: mem_buffer,
+                            resource_type: PhantomData,
+                        })
+                    }
+                    Err(e) => Err(super::Error::IoError(e)),
+                }
             }
-            Err(e) => panic!("[Sender] failed to start {:?}", e),
+            Err(e) => Err(super::Error::IoError(e)),
         }
+    }
+
+    fn write_to_disk(
+        &self,
+        event: T,
+        guard: &mut MutexGuard<BackGuardInner<SenderSync>>,
+    ) -> Result<(), (T, super::Error)> {
+        let mut buf: Vec<u8> = Vec::with_capacity(64);
+        let mut e = DeflateEncoder::new(buf, Compression::fast());
+        serialize_into(&mut e, &event, Infinite).expect("could not serialize");
+        buf = e.finish().unwrap();
+        let payload_len = buf.len();
+        // If the individual sender writes enough to go over the max we mark the
+        // file read-only--which will help the receiver to decide it has hit the
+        // end of its log file--and create a new log file.
+        let bytes_written =
+            (*guard).inner.bytes_written + payload_len + ::std::mem::size_of::<u64>();
+        if (bytes_written > self.max_disk_bytes) || (*guard).inner.sender_fp.is_none() {
+            // Once we've gone over the write limit for our current file or find
+            // that we've gotten behind the current queue file we need to seek
+            // forward to find our place in the space of queue files. We mark
+            // our current file read-only and then bump sender_seq_num to get up
+            // to date.
+            let _ = fs::metadata(&(*guard).inner.path).map(|p| {
+                let mut permissions = p.permissions();
+                permissions.set_readonly(true);
+                let _ = fs::set_permissions(&(*guard).inner.path, permissions);
+            });
+            (*guard).inner.sender_seq_num = (*guard).inner.sender_seq_num.wrapping_add(1);
+            (*guard).inner.path = self.root.join(format!("{}", (*guard).inner.sender_seq_num));
+            match fs::OpenOptions::new()
+                .append(true)
+                .create(true)
+                .open(&(*guard).inner.path)
+            {
+                Ok(fp) => {
+                    (*guard).inner.sender_fp = Some(BufWriter::new(fp));
+                    (*guard).inner.bytes_written = 0;
+                }
+                Err(e) => {
+                    return Err((event, super::Error::IoError(e)));
+                }
+            }
+        }
+
+        assert!((*guard).inner.sender_fp.is_some());
+        let mut bytes_written = 0;
+        if let Some(ref mut fp) = (*guard).inner.sender_fp {
+            match fp.write_u64::<BigEndian>(payload_len as u64) {
+                Ok(()) => bytes_written += ::std::mem::size_of::<u64>(),
+                Err(e) => {
+                    return Err((event, super::Error::IoError(e)));
+                }
+            };
+            match fp.write(&buf[..]) {
+                Ok(written) => {
+                    assert_eq!(payload_len, written);
+                    bytes_written += written;
+                }
+                Err(e) => {
+                    return Err((event, super::Error::IoError(e)));
+                }
+            }
+        }
+        (*guard).inner.bytes_written += bytes_written;
+        Ok(())
+    }
+
+    /// Attempt to flush any outstanding disk writes to the deque
+    ///
+    /// This function will attempt to flush outstanding disk writes, which may
+    /// fail if the in-memory buffer is full. This function is useful when
+    /// traffic patterns are bursty, meaning a write may end up being stranded
+    /// in limbo for a good spell.
+    pub fn flush(&mut self) -> Result<(), super::Error> {
+        let mut back_guard = self.mem_buffer.lock_back();
+        if (*back_guard).inner.total_disk_writes != 0 {
+            // disk mode
+            assert!((*back_guard).inner.sender_fp.is_some());
+            if let Some(ref mut fp) = (*back_guard).inner.sender_fp {
+                fp.flush().expect("unable to flush");
+            } else {
+                unreachable!()
+            }
+            match self.mem_buffer.push_back(
+                private::Placement::Disk((*back_guard).inner.total_disk_writes),
+                &mut back_guard,
+            ) {
+                Ok(must_wake_receiver) => {
+                    (*back_guard).inner.total_disk_writes = 0;
+                    if must_wake_receiver {
+                        let front_guard = self.mem_buffer.lock_front();
+                        self.mem_buffer.notify_not_empty(&front_guard);
+                        drop(front_guard);
+                    }
+                }
+                Err(_) => {
+                    return Err(super::Error::NoFlush);
+                }
+            }
+        }
+        Ok(())
     }
 
     /// send writes data out in chunks, like so:
@@ -102,98 +195,81 @@ where
     ///  u32: payload_size
     ///  [u8] payload
     ///
-    pub fn send(&mut self, event: T) {
-        let mut syn = self.fs_lock.lock().expect("Sender fs_lock poisoned");
-        let fslock = &mut (*syn);
-
-        if fslock.sender_idx < fslock.in_memory_idx {
-            fslock.mem_buffer.push_back(event);
-        } else {
-            fslock.disk_buffer.push_back(event);
-            if fslock.disk_buffer.len() >= fslock.in_memory_idx {
-                while let Some(ev) = fslock.disk_buffer.pop_front() {
-                    let mut pyld = Vec::with_capacity(64);
-                    serialize_into(&mut pyld, &ev, Infinite).expect("could not serialize");
-                    // NOTE The conversion of t.len to u32 and usize is _only_
-                    // safe when u32 <= usize. That's very likely to hold true
-                    // for machines--for now?--that hopper will run on. However!
-                    let pyld_sz_bytes: [u8; 4] = u32tou8abe(pyld.len() as u32);
-                    let mut t = vec![0, 0, 0, 0];
-                    t[0] = pyld_sz_bytes[3];
-                    t[1] = pyld_sz_bytes[2];
-                    t[2] = pyld_sz_bytes[1];
-                    t[3] = pyld_sz_bytes[0];
-                    t.append(&mut pyld);
-                    // If the individual sender writes enough to go over the max
-                    // we mark the file read-only--which will help the receiver
-                    // to decide it has hit the end of its log file--and create
-                    // a new log file.
-                    let bytes_written = fslock.bytes_written + t.len();
-                    if (bytes_written > self.max_bytes) || (self.seq_num != fslock.sender_seq_num)
-                        || fslock.sender_fp.is_none()
-                    {
-                        // Once we've gone over the write limit for our current
-                        // file or find that we've gotten behind the current
-                        // queue file we need to seek forward to find our place
-                        // in the space of queue files. We mark our current file
-                        // read-only--there's some possibility that this will be
-                        // done redundantly, but that's okay--and then read the
-                        // current sender_seq_num to get up to date.
-                        let _ = fs::metadata(&self.path).map(|p| {
-                            let mut permissions = p.permissions();
-                            permissions.set_readonly(true);
-                            let _ = fs::set_permissions(&self.path, permissions);
-                        });
-                        if fslock.sender_fp.is_some() {
-                            if self.seq_num != fslock.sender_seq_num {
-                                // This thread is behind the leader. We've got to
-                                // set our current notion of seq_num forward and
-                                // then open the corresponding file.
-                                self.seq_num = fslock.sender_seq_num;
-                            } else {
-                                // This thread is the leader. We reset the
-                                // sender_seq_num and bytes written and open the
-                                // next queue file. All follower threads will hit
-                                // the branch above this one.
-                                fslock.sender_seq_num = self.seq_num.wrapping_add(1);
-                                self.seq_num = fslock.sender_seq_num;
-                                fslock.bytes_written = 0;
-                            }
-                        }
-                        self.path = self.root.join(format!("{}", self.seq_num));
-                        match fs::OpenOptions::new()
-                            .append(true)
-                            .create(true)
-                            .open(&self.path)
-                        {
-                            Ok(fp) => fslock.sender_fp = Some(BufWriter::new(fp)),
-                            Err(e) => panic!("FAILED TO OPEN {:?} WITH {:?}", &self.path, e),
-                        }
-                    }
-
-                    assert!(fslock.sender_fp.is_some());
-                    if let Some(ref mut fp) = fslock.sender_fp {
-                        match fp.write(&t[..]) {
-                            Ok(written) => fslock.bytes_written += written,
-                            Err(e) => panic!("Write error: {}", e),
-                        }
-                        fslock.disk_writes_to_read += 1;
+    pub fn send(&mut self, event: T) -> Result<(), (T, super::Error)> {
+        // Welcome. Let me tell you about the time I fell off the toilet, hit my
+        // head and when I woke up I saw this! ~passes knapkin drawing of the
+        // flux capacitor over to you~
+        //
+        // This function pushes `event` into an in-memory deque unless that
+        // deque is full. Previous versions of hopper had a series of
+        // complicated flags and a monolock to coordinate with the Receiver to
+        // make sure that the `event` would eventually make it to disk or be
+        // stuffed into memory and order would be preserved throughout. This was
+        // goofy.
+        //
+        // What struck me, noodling about how to keep order, was that if I
+        // dropped all the flags and just used the data itself to signal where
+        // and in what order we needed to read we'd be in business. Every
+        // `event` gets wrapped in a `private::Placement` that indicates to the
+        // Receiver if it's in-memory -- in which case, it's right there -- or
+        // how many things are on disk needing to be read.
+        //
+        // Dang!
+        //
+        // We start off this function assuming that we can place the event into
+        // memory and, failing that, write the value to disk and flip into 'disk
+        // mode'. In disk mode every event is written to disk, then we attempt
+        // to write a disk placement into the deque. If that succeeeds we move
+        // back to memory-mode for the next write, in which we attempt to write
+        // to the deque first. In this was order is preserved, a couple of
+        // things go to disk and we're capped on memory. Or, more specifically:
+        //
+        // There are two sending modes: in-memory and to-disk. We detect that
+        // we're in to-disk mode by the value of `total_disk_writes`. If it's
+        // non-zero we default to writing to disk, then attempt a
+        // `placement::Disk(total_disk_writes)` push_back. If that is a success
+        // we're in in-memory mode. If that's a failure we're still in
+        // to-disk. Similar story for flipping from in-memory to to-disk.
+        let mut back_guard = self.mem_buffer.lock_back();
+        if (*back_guard).inner.total_disk_writes == 0 {
+            // in-memory mode
+            let placed_event = private::Placement::Memory(event);
+            match self.mem_buffer.push_back(placed_event, &mut back_guard) {
+                Ok(must_wake_receiver) => {
+                    if must_wake_receiver {
+                        let front_guard = self.mem_buffer.lock_front();
+                        self.mem_buffer.notify_not_empty(&front_guard);
+                        drop(front_guard);
                     }
                 }
-                assert!(fslock.sender_fp.is_some());
-                if let Some(ref mut fp) = fslock.sender_fp {
-                    fp.flush().expect("unable to flush");
+                Err(deque::Error::Full(placed_event)) => {
+                    self.write_to_disk(placed_event.extract().unwrap(), &mut back_guard)?;
+                    (*back_guard).inner.total_disk_writes += 1;
+                }
+            }
+        } else {
+            // disk mode
+            self.write_to_disk(event, &mut back_guard)?;
+            (*back_guard).inner.total_disk_writes += 1;
+            assert!((*back_guard).inner.sender_fp.is_some());
+            if let Some(ref mut fp) = (*back_guard).inner.sender_fp {
+                fp.flush().expect("unable to flush");
+            } else {
+                unreachable!()
+            }
+            if let Ok(must_wake_receiver) = self.mem_buffer.push_back(
+                private::Placement::Disk((*back_guard).inner.total_disk_writes),
+                &mut back_guard,
+            ) {
+                (*back_guard).inner.total_disk_writes = 0;
+                if must_wake_receiver {
+                    let front_guard = self.mem_buffer.lock_front();
+                    self.mem_buffer.notify_not_empty(&front_guard);
+                    drop(front_guard);
                 }
             }
         }
-        fslock.writes_to_read += 1;
-        if (fslock.sender_captured_recv_id != fslock.receiver_read_id)
-            || fslock.write_bound.is_none()
-        {
-            fslock.sender_captured_recv_id = fslock.receiver_read_id;
-            fslock.write_bound = Some(fslock.sender_idx);
-        }
-        fslock.sender_idx += 1;
+        Ok(())
     }
 
     /// Return the sender's name
