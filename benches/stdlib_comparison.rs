@@ -52,9 +52,13 @@ fn hopper_tst(input: HopperInput) -> () {
     let in_memory_bytes = sz * input.in_memory_total;
     let max_disk_bytes = sz * input.max_disk_total;
     if let Ok(dir) = tempdir::TempDir::new("hopper") {
-        if let Ok((snd, mut rcv)) =
-            channel_with_explicit_capacity("tst", dir.path(), in_memory_bytes, max_disk_bytes)
-        {
+        if let Ok((snd, mut rcv)) = channel_with_explicit_capacity(
+            "tst",
+            dir.path(),
+            in_memory_bytes,
+            max_disk_bytes,
+            usize::max_value(),
+        ) {
             let chunk_size = input.ith / input.total_senders;
 
             let mut snd_jh = Vec::new();

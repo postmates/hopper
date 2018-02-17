@@ -77,7 +77,8 @@ pub use self::receiver::Receiver;
 pub use self::sender::Sender;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-use std::{fs, io, mem};
+use std::{fs, io, mem, sync};
+use std::sync::atomic::AtomicUsize;
 use std::path::Path;
 
 /// Defines the errors that hopper will bubble up
@@ -96,6 +97,9 @@ pub enum Error {
     IoError(io::Error),
     /// Could not flush Sender
     NoFlush,
+    /// Could not write element because there is no remaining memory or disk
+    /// space
+    Full,
 }
 
 /// Create a (Sender, Reciever) pair in a like fashion to
@@ -121,7 +125,7 @@ pub fn channel<T>(name: &str, data_dir: &Path) -> Result<(Sender<T>, Receiver<T>
 where
     T: Serialize + DeserializeOwned,
 {
-    channel_with_explicit_capacity(name, data_dir, 0x100_000, 0x10_000_000)
+    channel_with_explicit_capacity(name, data_dir, 0x100_000, 0x10_000_000, usize::max_value())
 }
 
 /// Create a (Sender, Reciever) pair in a like fashion to
@@ -130,13 +134,18 @@ where
 /// This function creates a Sender and Receiver pair with name `name` whose
 /// queue files are stored in `data_dir`. The maximum number of bytes that will
 /// be stored in-memory are `max(max_memory_bytes, size_of(T))` and the maximum
-/// size of a queue file will be `max(max_disk_bytes, 1Mb)`. The Sender is
-/// clonable.
+/// size of a queue file will be `max(max_disk_bytes, 1Mb)`. `max_disk_files`
+/// sets the total number of concurrent queue files which are allowed to
+/// exist. The total on-disk consumption of hopper will then be
+/// `max(max_memory_bytes, size_of(T)) * max_disk_files`.
+///
+/// The Sender is clonable.
 pub fn channel_with_explicit_capacity<T>(
     name: &str,
     data_dir: &Path,
     max_memory_bytes: usize,
     max_disk_bytes: usize,
+    max_disk_files: usize,
 ) -> Result<(Sender<T>, Receiver<T>), Error>
 where
     T: Serialize + DeserializeOwned,
@@ -157,8 +166,15 @@ where
     if let Err(e) = private::clear_directory(&root) {
         return Err(Error::IoError(e));
     }
-    let sender = Sender::new(name, &root, max_disk_bytes, q.clone())?;
-    let receiver = Receiver::new(&root, q)?;
+    let max_disk_files = sync::Arc::new(AtomicUsize::new(max_disk_files));
+    let sender = Sender::new(
+        name,
+        &root,
+        max_disk_bytes,
+        q.clone(),
+        sync::Arc::clone(&max_disk_files),
+    )?;
+    let receiver = Receiver::new(&root, q, sync::Arc::clone(&max_disk_files))?;
     Ok((sender, receiver))
 }
 
@@ -171,13 +187,103 @@ mod test {
     use super::channel_with_explicit_capacity;
     use std::{mem, thread};
 
-    fn round_trip_exp(in_memory_limit: usize, max_bytes: usize, total_elems: usize) -> bool {
+    #[test]
+    fn ingress_shedding() {
+        if let Ok(dir) = tempdir::TempDir::new("hopper") {
+            if let Ok((mut snd, mut rcv)) = channel_with_explicit_capacity::<u64>(
+                "round_trip_order_preserved", // name
+                dir.path(),                   // data_dir
+                8,                            // max_memory_bytes
+                32,                           // max_disk_bytes
+                2,                            // max_disk_files
+            ) {
+                let total_elems = 5 * 131082;
+                // Magic constant, depends on compression level and what
+                // not. May need to do a looser assertion.
+                let expected_shed_sends = 383981;
+                let mut shed_sends = 0;
+                let mut sent_values = Vec::new();
+                for i in 0..total_elems {
+                    loop {
+                        match snd.send(i) {
+                            Ok(()) => {
+                                sent_values.push(i);
+                                break;
+                            }
+                            Err((r, err)) => {
+                                assert_eq!(r, i);
+                                match err {
+                                    super::Error::Full => {
+                                        shed_sends += 1;
+                                        break;
+                                    }
+                                    _ => {
+                                        continue;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                assert_eq!(shed_sends, expected_shed_sends);
+
+                let mut received_elements = 0;
+                // clear space for one more element
+                let mut attempts = 0;
+                loop {
+                    match rcv.iter().next() {
+                        None => {
+                            attempts += 1;
+                            assert!(attempts < 10_000);
+                        }
+                        Some(res) => {
+                            received_elements += 1;
+                            assert_eq!(res, 0);
+                            break;
+                        }
+                    }
+                }
+                // flush any disk writes
+                loop {
+                    if snd.flush().is_ok() {
+                        break;
+                    }
+                }
+                // pull the rest of the elements
+                let mut attempts = 0;
+                for i in &sent_values[1..] {
+                    loop {
+                        match rcv.iter().next() {
+                            None => {
+                                attempts += 1;
+                                assert!(attempts < 10_000);
+                            }
+                            Some(res) => {
+                                received_elements += 1;
+                                assert_eq!(*i, res);
+                                break;
+                            }
+                        }
+                    }
+                }
+                assert_eq!(received_elements, sent_values.len());
+            }
+        }
+    }
+
+    fn round_trip_exp(
+        in_memory_limit: usize,
+        max_bytes: usize,
+        max_disk_files: usize,
+        total_elems: usize,
+    ) -> bool {
         if let Ok(dir) = tempdir::TempDir::new("hopper") {
             if let Ok((mut snd, mut rcv)) = channel_with_explicit_capacity(
                 "round_trip_order_preserved",
                 dir.path(),
                 in_memory_limit,
                 max_bytes,
+                max_disk_files,
             ) {
                 for i in 0..total_elems {
                     loop {
@@ -208,7 +314,6 @@ mod test {
                 }
                 // pull the rest of the elements
                 for i in 1..total_elems {
-                    // the +1 is for the unflushed item
                     let mut attempts = 0;
                     loop {
                         match rcv.iter().next() {
@@ -235,7 +340,13 @@ mod test {
             if (in_memory_limit / sz) == 0 || (max_bytes / sz) == 0 || total_elems == 0 {
                 return TestResult::discard();
             }
-            TestResult::from_bool(round_trip_exp(in_memory_limit, max_bytes, total_elems))
+            let max_disk_files = usize::max_value();
+            TestResult::from_bool(round_trip_exp(
+                in_memory_limit,
+                max_bytes,
+                max_disk_files,
+                total_elems,
+            ))
         }
         QuickCheck::new().quickcheck(inner as fn(usize, usize, usize) -> TestResult);
     }
@@ -244,12 +355,17 @@ mod test {
         total_senders: usize,
         in_memory_bytes: usize,
         disk_bytes: usize,
+        max_disk_files: usize,
         vals: Vec<u64>,
     ) -> bool {
         if let Ok(dir) = tempdir::TempDir::new("hopper") {
-            if let Ok((snd, mut rcv)) =
-                channel_with_explicit_capacity("tst", dir.path(), in_memory_bytes, disk_bytes)
-            {
+            if let Ok((snd, mut rcv)) = channel_with_explicit_capacity(
+                "tst",
+                dir.path(),
+                in_memory_bytes,
+                disk_bytes,
+                max_disk_files,
+            ) {
                 let chunk_size = vals.len() / total_senders;
 
                 let mut snd_jh = Vec::new();
@@ -327,6 +443,7 @@ mod test {
         let total_senders = 10;
         let in_memory_bytes = 50;
         let disk_bytes = 10;
+        let max_disk_files = 100;
         let vals = vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
 
         let mut loops = 0;
@@ -335,6 +452,7 @@ mod test {
                 total_senders,
                 in_memory_bytes,
                 disk_bytes,
+                max_disk_files,
                 vals.clone(),
             ));
             loops += 1;
@@ -351,6 +469,7 @@ mod test {
             total_senders: usize,
             in_memory_bytes: usize,
             disk_bytes: usize,
+            max_disk_files: usize,
             vals: Vec<u64>,
         ) -> TestResult {
             let sz = mem::size_of::<u64>();
@@ -364,21 +483,28 @@ mod test {
                 total_senders,
                 in_memory_bytes,
                 disk_bytes,
+                max_disk_files,
                 vals,
             ))
         }
-        QuickCheck::new().quickcheck(inner as fn(usize, usize, usize, Vec<u64>) -> TestResult);
+        QuickCheck::new()
+            .quickcheck(inner as fn(usize, usize, usize, usize, Vec<u64>) -> TestResult);
     }
 
     fn single_sender_single_rcv_round_trip_exp(
         in_memory_bytes: usize,
         disk_bytes: usize,
+        max_disk_files: usize,
         total_vals: usize,
     ) -> bool {
         if let Ok(dir) = tempdir::TempDir::new("hopper") {
-            if let Ok((mut snd, mut rcv)) =
-                channel_with_explicit_capacity("tst", dir.path(), in_memory_bytes, disk_bytes)
-            {
+            if let Ok((mut snd, mut rcv)) = channel_with_explicit_capacity(
+                "tst",
+                dir.path(),
+                in_memory_bytes,
+                disk_bytes,
+                max_disk_files,
+            ) {
                 let builder = thread::Builder::new();
                 if let Ok(snd_jh) = builder.spawn(move || {
                     for i in 0..total_vals {
@@ -433,7 +559,7 @@ mod test {
     fn explicit_single_sender_single_rcv_round_trip() {
         let mut loops = 0;
         loop {
-            assert!(single_sender_single_rcv_round_trip_exp(8, 8, 5));
+            assert!(single_sender_single_rcv_round_trip_exp(8, 8, 5, 10));
             loops += 1;
             if loops > 2_500 {
                 break;
@@ -446,7 +572,12 @@ mod test {
     fn single_sender_single_rcv_round_trip() {
         // Similar to the multi sender test except now with a single sender we
         // can guarantee order.
-        fn inner(in_memory_bytes: usize, disk_bytes: usize, total_vals: usize) -> TestResult {
+        fn inner(
+            in_memory_bytes: usize,
+            disk_bytes: usize,
+            max_disk_files: usize,
+            total_vals: usize,
+        ) -> TestResult {
             let sz = mem::size_of::<u64>();
             if total_vals == 0 || (in_memory_bytes / sz) == 0 || (disk_bytes / sz) == 0 {
                 return TestResult::discard();
@@ -454,10 +585,11 @@ mod test {
             TestResult::from_bool(single_sender_single_rcv_round_trip_exp(
                 in_memory_bytes,
                 disk_bytes,
+                max_disk_files,
                 total_vals,
             ))
         }
-        QuickCheck::new().quickcheck(inner as fn(usize, usize, usize) -> TestResult);
+        QuickCheck::new().quickcheck(inner as fn(usize, usize, usize, usize) -> TestResult);
     }
 
 }
