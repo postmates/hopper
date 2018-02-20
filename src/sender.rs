@@ -3,7 +3,8 @@ use byteorder::{BigEndian, WriteBytesExt};
 use private;
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::sync::MutexGuard;
+use std::sync::{Arc, MutexGuard};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use deque::BackGuardInner;
 use std::io::{BufWriter, Write};
 use std::marker::PhantomData;
@@ -11,6 +12,8 @@ use std::path::{Path, PathBuf};
 use flate2::Compression;
 use flate2::write::DeflateEncoder;
 use deque;
+
+const PAYLOAD_LEN_BYTES: usize = ::std::mem::size_of::<u32>();
 
 #[derive(Debug)]
 /// The 'send' side of hopper, similar to `std::sync::mpsc::Sender`.
@@ -20,6 +23,7 @@ pub struct Sender<T> {
     max_disk_bytes: usize,
     mem_buffer: private::Queue<T>,
     resource_type: PhantomData<T>,
+    disk_files_capacity: Arc<AtomicUsize>,
 }
 
 #[derive(Default, Debug)]
@@ -42,6 +46,7 @@ where
             max_disk_bytes: self.max_disk_bytes,
             mem_buffer: self.mem_buffer.clone(),
             resource_type: self.resource_type,
+            disk_files_capacity: Arc::clone(&self.disk_files_capacity),
         }
     }
 }
@@ -56,6 +61,7 @@ where
         data_dir: &Path,
         max_disk_bytes: usize,
         mem_buffer: private::Queue<T>,
+        max_disk_files: Arc<AtomicUsize>,
     ) -> Result<Sender<T>, super::Error>
     where
         S: Into<String>,
@@ -79,6 +85,7 @@ where
                             max_disk_bytes: max_disk_bytes,
                             mem_buffer: mem_buffer,
                             resource_type: PhantomData,
+                            disk_files_capacity: max_disk_files,
                         })
                     }
                     Err(e) => Err(super::Error::IoError(e)),
@@ -101,8 +108,7 @@ where
         // If the individual sender writes enough to go over the max we mark the
         // file read-only--which will help the receiver to decide it has hit the
         // end of its log file--and create a new log file.
-        let bytes_written =
-            (*guard).inner.bytes_written + payload_len + ::std::mem::size_of::<u64>();
+        let bytes_written = (*guard).inner.bytes_written + payload_len + PAYLOAD_LEN_BYTES;
         if (bytes_written > self.max_disk_bytes) || (*guard).inner.sender_fp.is_none() {
             // Once we've gone over the write limit for our current file or find
             // that we've gotten behind the current queue file we need to seek
@@ -116,17 +122,23 @@ where
             });
             (*guard).inner.sender_seq_num = (*guard).inner.sender_seq_num.wrapping_add(1);
             (*guard).inner.path = self.root.join(format!("{}", (*guard).inner.sender_seq_num));
-            match fs::OpenOptions::new()
-                .append(true)
-                .create(true)
-                .open(&(*guard).inner.path)
-            {
-                Ok(fp) => {
-                    (*guard).inner.sender_fp = Some(BufWriter::new(fp));
-                    (*guard).inner.bytes_written = 0;
-                }
-                Err(e) => {
-                    return Err((event, super::Error::IoError(e)));
+            let disk_files_capacity = self.disk_files_capacity.load(Ordering::Acquire);
+            if disk_files_capacity == 0 {
+                return Err((event, super::Error::Full));
+            } else {
+                match fs::OpenOptions::new()
+                    .append(true)
+                    .create(true)
+                    .open(&(*guard).inner.path)
+                {
+                    Ok(fp) => {
+                        self.disk_files_capacity.fetch_sub(1, Ordering::Release);
+                        (*guard).inner.sender_fp = Some(BufWriter::new(fp));
+                        (*guard).inner.bytes_written = 0;
+                    }
+                    Err(e) => {
+                        return Err((event, super::Error::IoError(e)));
+                    }
                 }
             }
         }
@@ -134,8 +146,8 @@ where
         assert!((*guard).inner.sender_fp.is_some());
         let mut bytes_written = 0;
         if let Some(ref mut fp) = (*guard).inner.sender_fp {
-            match fp.write_u64::<BigEndian>(payload_len as u64) {
-                Ok(()) => bytes_written += ::std::mem::size_of::<u64>(),
+            match fp.write_u32::<BigEndian>(payload_len as u32) {
+                Ok(()) => bytes_written += PAYLOAD_LEN_BYTES,
                 Err(e) => {
                     return Err((event, super::Error::IoError(e)));
                 }
@@ -190,11 +202,14 @@ where
         Ok(())
     }
 
-    /// send writes data out in chunks, like so:
+    /// Send a event into the queue
     ///
-    ///  u32: payload_size
-    ///  [u8] payload
-    ///
+    /// This function will fail with IO errors if the underlying queue files are
+    /// temporarily exhausted -- say, due to lack of file descriptors -- of with
+    /// Full if there is no more space in the in-memory buffer _or_ on disk, as
+    /// per the `max_disk_files` setting from
+    /// `channel_with_explicit_capacity`. Ownership of the event will be
+    /// returned back to the caller on failure.
     pub fn send(&mut self, event: T) -> Result<(), (T, super::Error)> {
         // Welcome. Let me tell you about the time I fell off the toilet, hit my
         // head and when I woke up I saw this! ~passes knapkin drawing of the

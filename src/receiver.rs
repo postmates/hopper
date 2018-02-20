@@ -2,7 +2,8 @@ use bincode::{deserialize_from, Infinite};
 use private;
 use byteorder::{BigEndian, ReadBytesExt};
 use serde::de::DeserializeOwned;
-use std::fs;
+use std::{fs, sync};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::io::{BufReader, ErrorKind, Read, Seek, SeekFrom};
 use std::iter::IntoIterator;
 use std::marker::PhantomData;
@@ -18,6 +19,7 @@ pub struct Receiver<T> {
     resource_type: PhantomData<T>,
     mem_buffer: private::Queue<T>,
     disk_writes_to_read: usize,
+    max_disk_files: sync::Arc<AtomicUsize>,
 }
 
 impl<T> Receiver<T>
@@ -28,6 +30,7 @@ where
     pub fn new(
         data_dir: &Path,
         mem_buffer: private::Queue<T>,
+        max_disk_files: sync::Arc<AtomicUsize>,
     ) -> Result<Receiver<T>, super::Error> {
         let setup_mem_buffer = mem_buffer.clone(); // clone is cheeeeeap
         let guard = setup_mem_buffer.lock_front();
@@ -48,6 +51,7 @@ where
                             resource_type: PhantomData,
                             mem_buffer: mem_buffer,
                             disk_writes_to_read: 0,
+                            max_disk_files: max_disk_files,
                         })
                     }
                     Err(e) => Err(super::Error::IoError(e)),
@@ -61,7 +65,7 @@ where
     // disk read happens and no `T` is returned this is an unrecoverable error.
     fn read_disk_value(&mut self) -> Result<T, super::Error> {
         loop {
-            match self.fp.read_u64::<BigEndian>() {
+            match self.fp.read_u32::<BigEndian>() {
                 Ok(payload_size_in_bytes) => {
                     let mut payload_buf = vec![0; payload_size_in_bytes as usize];
                     match self.fp.read_exact(&mut payload_buf[..]) {
@@ -100,6 +104,7 @@ where
                                     Ok(seq_num) => {
                                         let old_log = self.root.join(format!("{}", seq_num));
                                         fs::remove_file(old_log).expect("could not remove log");
+                                        self.max_disk_files.fetch_add(1, Ordering::Relaxed);
                                         let lg =
                                             self.root.join(format!("{}", seq_num.wrapping_add(1)));
                                         match fs::OpenOptions::new().read(true).open(&lg) {
