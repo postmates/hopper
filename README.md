@@ -78,7 +78,7 @@ the only reader--and moves on to the next.
 
 `hopper::channel_with_max_bytes` takes a `max_disk_files` argument, defining the
 total number of overflow files that can exist concurrently. If all memory and
-disk buffers are full sends into the queue will fail but the error result is
+disk buffers are full, sends into the queue will fail. The error result is
 written such that the caller can recover ownership of the input value. By
 default `max_disk_files == usize::max_value()` and so if the Receiver is unable
 to keep up with the Senders then, oops, your disk will gradually fill up.
