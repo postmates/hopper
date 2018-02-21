@@ -1,4 +1,4 @@
-use bincode::{deserialize_from, Infinite};
+use bincode::deserialize_from;
 use private;
 use byteorder::{BigEndian, ReadBytesExt};
 use serde::de::DeserializeOwned;
@@ -71,7 +71,7 @@ where
                     match self.fp.read_exact(&mut payload_buf[..]) {
                         Ok(()) => {
                             let mut dec = DeflateDecoder::new(&payload_buf[..]);
-                            match deserialize_from(&mut dec, Infinite) {
+                            match deserialize_from(&mut dec) {
                                 Ok(event) => {
                                     self.disk_writes_to_read -= 1;
                                     return Ok(event);

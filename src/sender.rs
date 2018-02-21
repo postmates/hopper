@@ -1,4 +1,4 @@
-use bincode::{serialize_into, Infinite};
+use bincode::serialize_into;
 use byteorder::{BigEndian, WriteBytesExt};
 use private;
 use serde::{Deserialize, Serialize};
@@ -102,7 +102,7 @@ where
     ) -> Result<(), (T, super::Error)> {
         let mut buf: Vec<u8> = Vec::with_capacity(64);
         let mut e = DeflateEncoder::new(buf, Compression::fast());
-        serialize_into(&mut e, &event, Infinite).expect("could not serialize");
+        serialize_into(&mut e, &event).expect("could not serialize");
         buf = e.finish().unwrap();
         let payload_len = buf.len();
         // If the individual sender writes enough to go over the max we mark the
