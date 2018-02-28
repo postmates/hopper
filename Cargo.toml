@@ -1,12 +1,15 @@
 [package]
 authors = ["Brian L. Troutwine <blt@postmates.com>"]
 description = "an unbounded mpsc with bounded memory"
-keywords = ["channel", "bounded", "mpsc", "asynchronous"]
 license = "MIT"
 name = "hopper"
 readme = "README.md"
 repository = "https://github.com/postmates/hopper"
-version = "0.4.1"
+homepage = "https://github.com/postmates/hopper"
+documentation = "https://docs.rs/hopper"
+version = "0.4.2"
+keywords = ["mpsc", "channel", "message", "bounded-memory"]
+categories = ["asynchronous", "concurrency"]
 
 [dev-dependencies]
 quickcheck = "0.6"
