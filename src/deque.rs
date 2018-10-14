@@ -10,7 +10,7 @@
 //
 // The exact API is a little weird, which we'll get into below. Just keep in
 // mind: it's a contiguous block of memory with some fancy bits tacked on.
-use std::sync::{Condvar, Mutex, MutexGuard};
+use parking_lot::{Condvar, Mutex, MutexGuard};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::{mem, sync};
 
@@ -84,7 +84,7 @@ where
         let raw_data = (&mut data).as_mut_ptr();
         mem::forget(data);
         InnerQueue {
-            capacity: capacity,
+            capacity,
             data: raw_data,
             size: AtomicUsize::new(0),
             back_lock: Mutex::new(BackGuardInner {
@@ -105,11 +105,11 @@ where
     }
 
     pub fn lock_back(&self) -> MutexGuard<BackGuardInner<S>> {
-        self.back_lock.lock().expect("back lock poisoned")
+        self.back_lock.lock()
     }
 
     pub fn lock_front(&self) -> MutexGuard<FrontGuardInner> {
-        self.front_lock.lock().expect("front lock poisoned")
+        self.front_lock.lock()
     }
 
     pub unsafe fn push_back(
@@ -133,11 +133,9 @@ where
     }
 
     pub unsafe fn pop_front(&self) -> T {
-        let mut guard = self.front_lock.lock().expect("front lock poisoned");
+        let mut guard = self.front_lock.lock();
         while self.size.load(Ordering::Acquire) == 0 {
-            guard = self.not_empty
-                .wait(guard)
-                .expect("oops could not wait pop_front");
+            self.not_empty.wait(&mut guard);
         }
         let elem: Option<T> = mem::replace(&mut *self.data.offset((*guard).offset), None);
         assert!(elem.is_some());
@@ -173,7 +171,7 @@ where
 {
     pub fn with_capacity(capacity: usize) -> Queue<T, S> {
         let inner = sync::Arc::new(InnerQueue::with_capacity(capacity));
-        Queue { inner: inner }
+        Queue { inner }
     }
 
     pub fn capacity(&self) -> usize {

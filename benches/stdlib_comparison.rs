@@ -3,15 +3,15 @@ extern crate criterion;
 extern crate hopper;
 extern crate tempdir;
 
-use std::{mem, thread};
-use criterion::{Bencher, Criterion};
+use criterion::{Bencher, Criterion, ParameterizedBenchmark, Throughput};
 use hopper::channel_with_explicit_capacity;
 use std::sync::mpsc::channel;
+use std::{mem, thread};
 
 fn mpsc_tst(input: MpscInput) -> () {
     let (tx, rx) = channel();
 
-    let chunk_size = input.ith / input.total_senders;
+    let chunk_size = input.total_elems / input.total_senders;
 
     let mut snd_jh = Vec::new();
     for _ in 0..input.total_senders {
@@ -49,8 +49,8 @@ fn mpsc_tst(input: MpscInput) -> () {
 
 fn hopper_tst(input: HopperInput) -> () {
     let sz = mem::size_of::<u64>();
-    let in_memory_bytes = sz * input.in_memory_total;
-    let max_disk_bytes = sz * input.max_disk_total;
+    let in_memory_bytes = sz * input.in_memory_max;
+    let max_disk_bytes = sz * input.on_disk_max;
     if let Ok(dir) = tempdir::TempDir::new("hopper") {
         if let Ok((snd, mut rcv)) = channel_with_explicit_capacity(
             "tst",
@@ -59,7 +59,7 @@ fn hopper_tst(input: HopperInput) -> () {
             max_disk_bytes,
             usize::max_value(),
         ) {
-            let chunk_size = input.ith / input.total_senders;
+            let chunk_size = input.total_elems / input.total_senders;
 
             let mut snd_jh = Vec::new();
             for _ in 0..input.total_senders {
@@ -101,51 +101,57 @@ fn hopper_tst(input: HopperInput) -> () {
 
 #[derive(Debug, Clone, Copy)]
 struct HopperInput {
-    in_memory_total: usize,
-    max_disk_total: usize,
+    in_memory_max: usize,
+    on_disk_max: usize,
     total_senders: usize,
-    ith: usize,
+    total_elems: usize,
 }
 
 #[derive(Debug, Clone, Copy)]
 struct MpscInput {
     total_senders: usize,
-    ith: usize,
+    total_elems: usize,
 }
 
 fn hopper_benchmark(c: &mut Criterion) {
-    c.bench_function_over_inputs(
-        "hopper_tst",
-        |b: &mut Bencher, input: &HopperInput| b.iter(|| hopper_tst(*input)),
-        vec![
-            // all in-memory
-            HopperInput {
-                in_memory_total: 2 << 11,
-                max_disk_total: 2 << 14,
-                total_senders: 2 << 1,
-                ith: 2 << 11,
-            },
-            // swap to disk
-            HopperInput {
-                in_memory_total: 2 << 11,
-                max_disk_total: 2 << 14,
-                total_senders: 2 << 1,
-                ith: 2 << 12,
-            },
-        ],
+    c.bench(
+        "hopper",
+        ParameterizedBenchmark::new(
+            "all in-memory",
+            |b: &mut Bencher, input: &HopperInput| b.iter(|| hopper_tst(*input)),
+            vec![
+                // all in-memory
+                HopperInput {
+                    in_memory_max: 2 << 12,
+                    on_disk_max: 2 << 14,
+                    total_senders: 2 << 1,
+                    total_elems: 2 << 12,
+                },
+                // swap to disk
+                HopperInput {
+                    in_memory_max: 2 << 11,
+                    on_disk_max: 2 << 14,
+                    total_senders: 2 << 1,
+                    total_elems: 2 << 12,
+                },
+            ],
+        )
+        .throughput(|input: &HopperInput| Throughput::Elements(input.total_elems as u32)),
     );
 }
 
 fn mpsc_benchmark(c: &mut Criterion) {
-    c.bench_function_over_inputs(
-        "mpsc_tst",
-        |b: &mut Bencher, input: &MpscInput| b.iter(|| mpsc_tst(*input)),
-        vec![
-            MpscInput {
+    c.bench(
+        "mpsc",
+        ParameterizedBenchmark::new(
+            "all in-memory",
+            |b: &mut Bencher, input: &MpscInput| b.iter(|| mpsc_tst(*input)),
+            vec![MpscInput {
                 total_senders: 2 << 1,
-                ith: 2 << 12,
-            },
-        ],
+                total_elems: 2 << 12,
+            }],
+        )
+        .throughput(|input: &MpscInput| Throughput::Elements(input.total_elems as u32)),
     );
 }
 

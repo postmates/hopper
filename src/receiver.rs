@@ -1,14 +1,14 @@
 use bincode::deserialize_from;
-use private;
 use byteorder::{BigEndian, ReadBytesExt};
+use flate2::read::DeflateDecoder;
+use private;
 use serde::de::DeserializeOwned;
-use std::{fs, sync};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::io::{BufReader, ErrorKind, Read, Seek, SeekFrom};
 use std::iter::IntoIterator;
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
-use flate2::read::DeflateDecoder;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::{fs, sync};
 
 #[derive(Debug)]
 /// The 'receive' side of hopper, similar to
@@ -49,9 +49,9 @@ where
                             root: data_dir.to_path_buf(),
                             fp: BufReader::new(fp),
                             resource_type: PhantomData,
-                            mem_buffer: mem_buffer,
+                            mem_buffer,
                             disk_writes_to_read: 0,
-                            max_disk_files: max_disk_files,
+                            max_disk_files,
                         })
                     }
                     Err(e) => Err(super::Error::IoError(e)),
@@ -95,7 +95,8 @@ where
                             // on us. We check the metadata condition of the
                             // file and, if we find it read-only, switch on over
                             // to a new log file.
-                            let metadata = self.fp
+                            let metadata = self
+                                .fp
                                 .get_ref()
                                 .metadata()
                                 .expect("could not get metadata at UnexpectedEof");

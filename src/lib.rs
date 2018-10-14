@@ -1,5 +1,12 @@
-#![deny(missing_docs, missing_debug_implementations, missing_copy_implementations,
-        trivial_numeric_casts, unstable_features, unused_import_braces, unused_qualifications)]
+#![deny(
+    missing_docs,
+    missing_debug_implementations,
+    missing_copy_implementations,
+    trivial_numeric_casts,
+    unstable_features,
+    unused_import_braces,
+    unused_qualifications
+)]
 //! hopper - an unbounded mpsc with bounded memory
 //!
 //! This module provides a version of the rust standard
@@ -66,20 +73,21 @@
 extern crate bincode;
 extern crate byteorder;
 extern crate flate2;
+extern crate parking_lot;
 extern crate serde;
 
+mod deque;
+mod private;
 mod receiver;
 mod sender;
-mod private;
-mod deque;
 
 pub use self::receiver::Receiver;
 pub use self::sender::Sender;
-use serde::Serialize;
 use serde::de::DeserializeOwned;
-use std::{fs, io, mem, sync};
-use std::sync::atomic::AtomicUsize;
+use serde::Serialize;
 use std::path::Path;
+use std::sync::atomic::AtomicUsize;
+use std::{fs, io, mem, sync};
 
 /// Defines the errors that hopper will bubble up
 ///
@@ -473,8 +481,11 @@ mod test {
             vals: Vec<u64>,
         ) -> TestResult {
             let sz = mem::size_of::<u64>();
-            if total_senders == 0 || total_senders > 10 || vals.len() == 0
-                || (vals.len() < total_senders) || (in_memory_bytes / sz) == 0
+            if total_senders == 0
+                || total_senders > 10
+                || vals.len() == 0
+                || (vals.len() < total_senders)
+                || (in_memory_bytes / sz) == 0
                 || (disk_bytes / sz) == 0
             {
                 return TestResult::discard();
