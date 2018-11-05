@@ -1,17 +1,18 @@
 use bincode::serialize_into;
 use byteorder::{BigEndian, WriteBytesExt};
+use deque;
+use deque::BackGuardInner;
+use flate2::write::DeflateEncoder;
+use flate2::Compression;
+use parking_lot::MutexGuard;
 use private;
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::sync::{Arc, MutexGuard};
-use std::sync::atomic::{AtomicUsize, Ordering};
-use deque::BackGuardInner;
 use std::io::{BufWriter, Write};
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
-use flate2::Compression;
-use flate2::write::DeflateEncoder;
-use deque;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
 const PAYLOAD_LEN_BYTES: usize = ::std::mem::size_of::<u32>();
 
@@ -82,8 +83,8 @@ where
                         Ok(Sender {
                             name: name.into(),
                             root: data_dir.to_path_buf(),
-                            max_disk_bytes: max_disk_bytes,
-                            mem_buffer: mem_buffer,
+                            max_disk_bytes,
+                            mem_buffer,
                             resource_type: PhantomData,
                             disk_files_capacity: max_disk_files,
                         })

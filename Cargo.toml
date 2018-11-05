@@ -1,5 +1,5 @@
 [package]
-authors = ["Brian L. Troutwine <blt@postmates.com>"]
+authors = ["Brian L. Troutwine <blt@postmates.com>", "Brian L. Troutwine <brian@troutwine.us>"]
 description = "an unbounded mpsc with bounded memory"
 license = "MIT"
 name = "hopper"
@@ -7,20 +7,21 @@ readme = "README.md"
 repository = "https://github.com/postmates/hopper"
 homepage = "https://github.com/postmates/hopper"
 documentation = "https://docs.rs/hopper"
-version = "0.4.2"
+version = "0.4.3-pre"
 keywords = ["mpsc", "channel", "message", "bounded-memory"]
 categories = ["asynchronous", "concurrency"]
 
 [dev-dependencies]
 quickcheck = "0.6"
 tempdir = "0.3"
-criterion = "0.2.0"
+criterion = "0.2"
 
 [dependencies]
 bincode = "1.0"
 byteorder = "1.2"
 flate2 = "1.0"
 serde = "1.0"
+parking_lot = "0.6"
 
 [[bench]]
 name = "stdlib_comparison"
